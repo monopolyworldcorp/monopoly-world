@@ -5976,6 +5976,8 @@ function _onAuthSuccess(user){
 
 function profileSignOut(){
   if(!firebase.apps.length){toast('Not signed in');return;}
+  // FIX: Mark user offline before signing out so friends see correct status
+  if(db&&currentUser){try{db.ref('users/'+currentUser.uid+'/online').set(false);}catch(e){}}
   firebase.auth().signOut().then(()=>{
     currentUser=null;
     // Reset ALL local profile data on sign-out (data lives in cloud)
@@ -6431,11 +6433,16 @@ function switchFrTab(tab){
 function refreshFriendsList(){
   const list=document.getElementById('fr-friends-list');
   if(!list||!db||!currentUser)return;
-  const prof=loadProfile();
-  const friends=prof.friends||[];
-  if(friends.length===0){list.innerHTML='<div class="fr-empty">No friends yet. Search for players to add!</div>';return;}
   list.innerHTML='<div class="fr-empty">Loading...</div>';
-  Promise.all(friends.map(uid=>db.ref('users/'+uid).once('value').then(s=>({uid,...(s.val()||{})})))).then(results=>{
+  // FIX: Load friends list from Firebase (source of truth), not just localStorage.
+  // On a new device/browser, localStorage is empty even if user has friends in Firebase.
+  db.ref('users/'+currentUser.uid+'/friends').once('value').then(fbSnap=>{
+    const fbFriends=fbSnap.val()||[];
+    const prof=loadProfile();const localFriends=prof.friends||[];
+    const friends=[...new Set([...fbFriends,...localFriends])];
+    if(fbFriends.length>localFriends.length){prof.friends=friends;_saveProfileObj(prof);}
+    if(friends.length===0){list.innerHTML='<div class="fr-empty">No friends yet. Search for players to add!</div>';return;}
+    Promise.all(friends.map(uid=>db.ref('users/'+uid).once('value').then(s=>({uid,...(s.val()||{})})))).then(results=>{
     if(results.length===0){list.innerHTML='<div class="fr-empty">No friends yet</div>';return;}
     list.innerHTML=results.map(f=>{
       const avSrc=f.avatarType==='upload'&&f.avatarData?f.avatarData:'';
@@ -6459,6 +6466,15 @@ function refreshFriendsList(){
     }).join('');
     // Update friend count badge
     updateFriendCount(results.length);
+    }); // close Promise.all
+  }).catch(()=>{
+    // Firebase unavailable — fallback to localStorage
+    const prof=loadProfile();const friends=prof.friends||[];
+    if(friends.length===0){list.innerHTML='<div class="fr-empty">No friends yet. Search for players to add!</div>';return;}
+    Promise.all(friends.map(uid=>db.ref('users/'+uid).once('value').then(s=>({uid,...(s.val()||{})})))).then(results=>{
+      list.innerHTML=results.map(f=>'<div class="fr-item">'+f.fullName+'</div>').join('');
+      updateFriendCount(results.length);
+    });
   });
 }
 
@@ -6563,9 +6579,12 @@ function stopFriendRequestListener(){
 function sendFriendRequest(targetUid){
   if(!db||!currentUser)return;
   const prof=loadProfile();
-  // Prevent duplicate requests
-  if((prof.sentRequests||[]).includes(targetUid)){toast('⏳ Request already sent!');return;}
   if((prof.friends||[]).includes(targetUid)){toast('✓ Already friends!');return;}
+  // FIX: Check Firebase for existing request (localStorage check fails on new devices/sessions)
+  db.ref('friendRequests/'+targetUid+'/'+currentUser.uid).once('value').then(existSnap=>{
+    if(existSnap.exists()){toast('⏳ Request already sent!');return;}
+    db.ref('users/'+currentUser.uid+'/friends').once('value').then(frSnap=>{
+      if((frSnap.val()||[]).includes(targetUid)){toast('✓ Already friends!');return;}
   db.ref('friendRequests/'+targetUid+'/'+currentUser.uid).set({
     from:currentUser.uid,
     fromName:prof.fullName||prof.name||'Player',
@@ -6584,6 +6603,8 @@ function sendFriendRequest(targetUid){
       if(addBtn)addBtn.outerHTML=`<span style="color:#f59e0b;font-size:11px">⏳ Pending</span>`;
     }
   }).catch(()=>toast('❌ Failed to send request'));
+    }); // close firebase friends check
+  }).catch(()=>toast('❌ Failed to send request'));
 }
 
 function acceptFriend(fromUid){
@@ -6595,15 +6616,15 @@ function acceptFriend(fromUid){
   if(!prof.friends.includes(fromUid))prof.friends.push(fromUid);
   _saveProfileObj(prof);
   syncProfileToCloud(prof);
-  // Add me to their friends list AND clean up their sentRequests
-  db.ref('users/'+fromUid).once('value').then(snap=>{
-    const theirData=snap.val()||{};
-    const theirFriends=Array.isArray(theirData.friends)?theirData.friends:[];
-    const theirSent=Array.isArray(theirData.sentRequests)?(theirData.sentRequests.filter(u=>u!==myUid)):[];
-    const updates={sentRequests:theirSent};
-    if(!theirFriends.includes(myUid)){updates.friends=[...theirFriends,myUid];}
-    db.ref('users/'+fromUid).update(updates).catch(e=>console.warn('Friend accept sync:',e));
-  });
+  // FIX: Use Firebase transaction to atomically add me to their friends list
+  db.ref('users/'+fromUid).transaction(theirData=>{
+    if(!theirData)theirData={};
+    if(!Array.isArray(theirData.friends))theirData.friends=[];
+    if(!theirData.friends.includes(myUid))theirData.friends.push(myUid);
+    if(Array.isArray(theirData.sentRequests))
+      theirData.sentRequests=theirData.sentRequests.filter(u=>u!==myUid);
+    return theirData;
+  }).catch(e=>console.warn('Friend accept sync:',e));
   // Remove the request from my inbox
   db.ref('friendRequests/'+myUid+'/'+fromUid).remove();
   toast('✅ Friend added!');
@@ -6624,10 +6645,10 @@ function removeFriend(friendUid){
   prof.friends=(prof.friends||[]).filter(u=>u!==friendUid);
   _saveProfileObj(prof);
   syncProfileToCloud(prof);
-  // Remove me from their list too
-  db.ref('users/'+friendUid+'/friends').once('value').then(snap=>{
-    const theirFriends=(snap.val()||[]).filter(u=>u!==currentUser.uid);
-    db.ref('users/'+friendUid+'/friends').set(theirFriends);
+  // FIX: Use transaction to atomically remove from their friends list
+  db.ref('users/'+friendUid+'/friends').transaction(friends=>{
+    if(!Array.isArray(friends))return [];
+    return friends.filter(u=>u!==currentUser.uid);
   });
   toast('Friend removed');
   refreshFriendsList();
@@ -6635,7 +6656,8 @@ function removeFriend(friendUid){
 
 function inviteFriend(friendUid){
   if(!db||!currentUser)return;
-  if(!roomCode||!isHost){toast('Create a room first to invite friends');return;}
+  // FIX: Any player in a room can invite friends (not just the host)
+  if(!roomCode){toast('Join or create a room first to invite friends');return;}
   db.ref('invites/'+friendUid+'/'+currentUser.uid).set({
     from:currentUser.uid,
     fromName:loadProfile().fullName||loadProfile().name,
@@ -6746,15 +6768,19 @@ function refreshIgFriends(){
     list.innerHTML=results.map(f=>`<div class="ig-friend-row">
       <div class="ig-friend-dot" style="background:${f.online?'#10b981':'#6b7280'}${f.online?';box-shadow:0 0 4px #10b981':''}"></div>
       <span class="ig-friend-name">${f.fullName||f.name||'Player'}</span>
-      ${roomCode&&isHost?`<button class=\"ig-friend-inv\" onclick=\"inviteFriend('${f.uid}')\">Invite</button>`:''}
+      ${roomCode?`<button class=\"ig-friend-inv\" onclick=\"inviteFriend('${f.uid}')\">Invite</button>`:''}
     </div>`).join('');
   }).catch(()=>{});
 }
 
 // Check for game invites
+let _invListRef=null,_invListCb=null;
 function checkInvites(){
   if(!db||!currentUser)return;
-  db.ref('invites/'+currentUser.uid).on('value',snap=>{
+  // FIX: Remove previous listener to prevent duplicate toast notifications
+  if(_invListRef&&_invListCb){_invListRef.off('value',_invListCb);_invListRef=null;_invListCb=null;}
+  _invListRef=db.ref('invites/'+currentUser.uid);
+  _invListCb=snap=>{
     const invites=snap.val();
     if(!invites)return;
     Object.entries(invites).forEach(([fromUid,inv])=>{
@@ -6773,7 +6799,8 @@ function checkInvites(){
       // Remove processed invite
       db.ref('invites/'+currentUser.uid+'/'+fromUid).remove();
     });
-  });
+  };
+  _invListRef.on('value',_invListCb);
 }
 
 // Rating update after game ends
@@ -11140,6 +11167,13 @@ const Rm={
     if(!d){toast(i18n('roomNotFound'));return}
     if(d.status!=='waiting'){toast(i18n('gameStarted'));return}
     if(Object.keys(d.players||{}).length>=(d.maxPlayers||4)){toast(i18n('roomFull'));return}
+    // FIX: Locked rooms require a valid invite (sent within last 5 minutes)
+    if(d.locked){
+      const invSnap=await db.ref('invites/'+currentUser.uid).once('value');
+      const invites=invSnap.val()||{};
+      const hasInvite=Object.values(invites).some(inv=>inv.roomCode===code&&Date.now()-inv.timestamp<300000);
+      if(!hasInvite){toast('🔒 This room is private. You need an invite to join.');return;}
+    }
     // FIX: Prevent same Firebase UID from joining room twice (e.g. multiple tabs)
     const existingUids=Object.values(d.players||{}).map(p=>p.uid).filter(Boolean);
     if(currentUser&&existingUids.includes(currentUser.uid)){toast('⚠️ You are already in this room!');return}
@@ -11183,7 +11217,7 @@ const Rm={
     if(!joinResult.committed){
       // Transaction aborted — refund entry fee if paid
       if(mc.entryFee>0){const curBal=getECoinBalance();setECoinBalance(curBal+mc.entryFee);}
-      toast(i18n('roomFull')||'Room is full or you are already in it!');roomCode='';return;
+      toast(i18n('roomFull')||'Room is full or you are already in it!');roomCode='';myId='';return;
     }
     db.ref(`${fbp(code)}/players/${myId}`).onDisconnect().remove();
     fbListen(code,d2=>this._upd(d2));
@@ -11416,15 +11450,35 @@ const Rm={
   },
   _upd(d){
     if(!d){
-      // Room was deleted (host left or kicked)
       if(!isHost){
-        // Refund entry fee when host closes room
         const closeMc=MODE_CONFIG[gameMode||'casual']||MODE_CONFIG.casual;
+        const _inActiveGame2=document.getElementById('sg')?.classList.contains('act');
+        if(_inActiveGame2){
+          // FIX: During an active game, brief host disconnect should NOT immediately end the session.
+          // Give a 5-second grace period. If the room is still gone, THEN exit.
+          toast('⚠️ Host disconnected! Checking in 5 seconds...');
+          const _savedRoomCode=roomCode;
+          setTimeout(()=>{
+            if(!_savedRoomCode||!db)return;
+            db.ref('rooms/'+_savedRoomCode).once('value').then(recheckSnap=>{
+              if(!recheckSnap.val()){
+                if(closeMc.entryFee>0){
+                  setECoinBalance(getECoinBalance()+closeMc.entryFee);
+                  toast('⚠️ Host left permanently. Entry fee Ⓔ'+closeMc.entryFee.toLocaleString()+' refunded');
+                }else toast('⚠️ Host disconnected — game ended');
+                Rm._cancelCountdown();LobbyChat.stop();
+                localP=[];roomCode='';goScr('sr');RoomBrowser.start();
+              }
+              // else: host reconnected and room is back — stay in game silently
+            }).catch(()=>{});
+          },5000);
+          return;
+        }
+        // In lobby — immediate exit with refund
         if(closeMc.entryFee>0){
-          const curBal=getECoinBalance();
-          setECoinBalance(curBal+closeMc.entryFee);
+          setECoinBalance(getECoinBalance()+closeMc.entryFee);
           toast('⚠️ Room closed by host. Entry fee Ⓔ'+closeMc.entryFee.toLocaleString()+' refunded');
-        } else {
+        }else{
           toast('⚠️ Room was closed by the host');
         }
         this._cancelCountdown();
@@ -11434,8 +11488,10 @@ const Rm={
       }
       return;
     }
-    // Check if we were kicked
-    if(!isHost&&myId&&d.players&&!d.players[myId]){
+    // Check if we were kicked — skip this check during an active game
+    // (brief disconnects can remove player from d.players mid-game)
+    const _activeGameRunning = d.status==='playing' && document.getElementById('sg')?.classList.contains('act');
+    if(!isHost&&myId&&d.players&&!d.players[myId]&&!_activeGameRunning){
       // Refund entry fee when kicked
       const kickMc=MODE_CONFIG[d.gameMode||gameMode||'casual']||MODE_CONFIG.casual;
       if(kickMc.entryFee>0){
@@ -11487,6 +11543,11 @@ const Rm={
       // Previously this showed ThemedLoader on EVERY Firebase GS push (every move).
       const alreadyInGame=document.getElementById('sg')?.classList.contains('act');
       GS=d.gs;myIdx=GS.pls.findIndex(p=>p.id===myId);
+      // FIX: If myId not found (page refresh / reconnect), fall back to UID match
+      if(myIdx===-1&&currentUser){
+        const _byUid=GS.pls.findIndex(p=>p.uid===currentUser.uid);
+        if(_byUid>=0){myIdx=_byUid;myId=GS.pls[_byUid].id;}
+      }
       if(!alreadyInGame){
         // First transition — show themed loader
         ThemedLoader.show(currentTheme, () => {
@@ -11700,11 +11761,12 @@ const Rm={
     if(db&&roomCode){try{db.ref(fbp(roomCode)).onDisconnect().cancel();}catch(e){}}
     // All players already have tokens picked - go directly to game
     // Bots already have tokens from addBot
-    if(db)await fbUp(roomCode,{status:'playing'});
-    // Build game state
+    // FIX: Build GS first, then write status+gs atomically.
+    // Previously status:'playing' was set before gs was ready, causing non-host
+    // clients to see status='playing' with no gs and crash on GS.pls access.
     const gs=mkGS(localP);GS=gs;myIdx=GS.pls.findIndex(p=>p.id===myId);
     if(db&&roomCode){
-      await fbGS(roomCode,gs);await fbUp(roomCode,{status:'playing'});
+      await db.ref(fbp(roomCode)).update({status:'playing',gs:gs,_lastUpdate:firebase.database.ServerValue.TIMESTAMP});
     }
     ThemedLoader.show(currentTheme, () => {
       goScr('sg');
@@ -16132,7 +16194,17 @@ const G={
     openOv('o-myloans');
   },
 
-  _push(){if(offline||!db||!roomCode)return;fbGS(roomCode,GS).catch(()=>{})}
+  _push(){
+    if(offline||!db||!roomCode)return;
+    // FIX: Only push from the authoritative client:
+    //  - It is my turn (current active player), OR
+    //  - I am the host and current player is a bot (host manages bots), OR
+    //  - _systemEnd=true (stale-turn enforcer / bust flow forcing state advance)
+    const _curIsMe=GS.pls?.[GS.cur]?.id===myId;
+    const _curIsBot=GS.pls?.[GS.cur]?.isBot;
+    if(!offline&&!_curIsMe&&!(isHost&&_curIsBot)&&!this._systemEnd)return;
+    fbGS(roomCode,GS).catch(()=>{});
+  }
 };
 
 const Tr={
