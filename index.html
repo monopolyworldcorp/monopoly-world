@@ -10814,7 +10814,7 @@ function goRoom(){
 }
 
 // ═══ CREATE ROOM HELPERS ═══
-let _crMode='casual', _crLocked=false;
+let _crMode='casual', _crLocked=false, _crReqMode='any';
 function openCreateRoom(){
   if(!currentUser){toast('⚠️ Sign in required to create a room!');openProfilePopup();return;}
   _crMode='casual';_crLocked=false;_crReqMode='any';
@@ -19408,56 +19408,4 @@ console.log('%c🔊 Audio System v35 loaded', 'background:#c8952a;color:#fff;pad
 </div>
 
 </body>
-<script>
-// === DIAGNOSTIC ALERTS - will be removed after debugging ===
-(function(){
-  // 1. Wrap goRoom
-  var _origGoRoom = window.goRoom;
-  window.goRoom = function(){
-    alert('STEP 1: goRoom() called');
-    try {
-      _origGoRoom();
-      alert('STEP 2: goRoom() completed OK - screen should be "sr" now');
-    } catch(e) {
-      alert('ERROR in goRoom: ' + (e.message||e));
-    }
-  };
-
-  // 2. Wrap openCreateRoom
-  var _origOpenCreate = window.openCreateRoom;
-  window.openCreateRoom = function(){
-    alert('STEP 3: openCreateRoom() called. currentUser=' + !!window.currentUser);
-    try {
-      _origOpenCreate();
-      alert('STEP 4: Create Room dialog should be open now');
-    } catch(e) {
-      alert('ERROR in openCreateRoom: ' + (e.message||e));
-    }
-  };
-
-  // 3. Wrap Rm.create
-  if(window.Rm){
-    var _origCreate = Rm.create;
-    Rm.create = async function(){
-      alert('STEP 5: Rm.create() called');
-      var fi = fbInit();
-      alert('STEP 6: fbInit()=' + fi + ', DB_URL=' + (FB_CFG.databaseURL||'NONE'));
-      try {
-        await _origCreate.call(Rm);
-        alert('STEP 7: Room created successfully!');
-      } catch(e) {
-        alert('ERROR in Rm.create: ' + (e.message||e));
-      }
-    };
-  }
-
-  // 4. Global error handlers
-  window.addEventListener('error', function(e){
-    alert('JS Error: ' + e.message + ' Line:' + e.lineno);
-  });
-  window.addEventListener('unhandledrejection', function(e){
-    alert('Async Error: ' + (e.reason&&e.reason.message||e.reason));
-  });
-})();
-</script>
 </html>
