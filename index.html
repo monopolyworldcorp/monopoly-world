@@ -5411,6 +5411,22 @@ body.popup-active .tok-emoji-ring{opacity:0!important;pointer-events:none!import
           <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M17.05 20.28c-.98.95-2.05.88-3.08.4-1.09-.5-2.08-.48-3.24 0-1.44.62-2.2.44-3.06-.4C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/></svg>
           Continue with Apple
         </button>
+        <button class="prof-login-btn" style="background:rgba(99,102,241,.1);border:1px solid rgba(99,102,241,.25);color:#a5b4fc" onclick="openEmailLoginPanel()">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>
+          Continue with Email
+        </button>
+      </div>
+      <!-- Email/Password login panel (hidden by default) -->
+      <div id="email-login-panel" style="display:none;margin-top:10px;padding:12px;background:rgba(99,102,241,.07);border:1px solid rgba(99,102,241,.2);border-radius:10px">
+        <div style="font-size:11px;font-weight:700;color:#a5b4fc;margin-bottom:8px;text-align:center">📧 Email Login / Register</div>
+        <input id="el-email" type="email" placeholder="your@email.com" style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:7px;border:1px solid rgba(99,102,241,.3);background:rgba(0,0,0,.3);color:#fff;font-size:12px;margin-bottom:6px;outline:none">
+        <input id="el-pass" type="password" placeholder="Password (min 6 characters)" style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:7px;border:1px solid rgba(99,102,241,.3);background:rgba(0,0,0,.3);color:#fff;font-size:12px;margin-bottom:8px;outline:none">
+        <div style="display:flex;gap:6px">
+          <button onclick="emailLogin()" style="flex:1;padding:7px;border-radius:7px;background:rgba(99,102,241,.25);border:1px solid rgba(99,102,241,.4);color:#a5b4fc;font-size:11px;font-weight:700;cursor:pointer">Sign In</button>
+          <button onclick="emailRegister()" style="flex:1;padding:7px;border-radius:7px;background:rgba(34,197,94,.15);border:1px solid rgba(34,197,94,.3);color:#4ade80;font-size:11px;font-weight:700;cursor:pointer">Register</button>
+          <button onclick="document.getElementById('email-login-panel').style.display='none'" style="padding:7px 10px;border-radius:7px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);color:var(--txt3);font-size:11px;cursor:pointer">✕</button>
+        </div>
+        <div id="el-forgot" style="text-align:center;margin-top:6px"><span onclick="emailForgotPass()" style="font-size:10px;color:rgba(99,102,241,.7);cursor:pointer;text-decoration:underline">Forgot password?</span></div>
       </div>
     </div>
   </div>
@@ -5890,6 +5906,9 @@ function profileLogin(provider){
     authProvider=new firebase.auth.GoogleAuthProvider();
   } else if(provider==='facebook'){
     authProvider=new firebase.auth.FacebookAuthProvider();
+    authProvider.addScope('email');
+    authProvider.addScope('public_profile');
+    authProvider.setCustomParameters({display:'popup',auth_type:'rerequest'});
   } else if(provider==='apple'){
     authProvider=new firebase.auth.OAuthProvider('apple.com');
     authProvider.addScope('email');
@@ -5909,10 +5928,22 @@ function profileLogin(provider){
     })
     .catch(err=>{
       console.error('Auth error:',err);
-      if(err.code==='auth/popup-closed-by-user'){
+      if(err.code==='auth/popup-closed-by-user'||err.code==='auth/cancelled-popup-request'){
         toast('Sign-in cancelled');
       } else if(err.code==='auth/account-exists-with-different-credential'){
-        toast('⚠️ Account exists with different sign-in method');
+        toast('⚠️ This email is already registered with a different sign-in method. Try Google login.');
+      } else if(err.code==='auth/operation-not-allowed'){
+        if(provider==='facebook'){
+          toast('⚠️ Facebook login not configured. Please try Google or Email login.');
+        } else if(provider==='apple'){
+          toast('⚠️ Apple login not configured. Please try Google or Email login.');
+        } else {
+          toast('⚠️ This sign-in method is disabled. Try another option.');
+        }
+      } else if(err.code==='auth/network-request-failed'){
+        toast('❌ Network error. Check your connection and try again.');
+      } else if(err.code==='auth/too-many-requests'){
+        toast('⚠️ Too many attempts. Please wait a moment and try again.');
       } else {
         toast('❌ Sign-in failed: '+(err.message||err.code));
       }
@@ -5920,6 +5951,69 @@ function profileLogin(provider){
     .finally(()=>{
       if(btn){btn.style.opacity='';btn.style.pointerEvents='';}
     });
+}
+
+function openEmailLoginPanel(){
+  const p=document.getElementById('email-login-panel');
+  if(p)p.style.display=p.style.display==='none'?'block':'none';
+}
+
+function _emailAuthFlow(action){
+  if(FB_CFG.apiKey==='YOUR_API_KEY'){toast('⚠️ Configure Firebase first');return;}
+  if(!firebase.apps.length)firebase.initializeApp(FB_CFG);
+  const email=(document.getElementById('el-email')?.value||'').trim();
+  const pass=(document.getElementById('el-pass')?.value||'').trim();
+  if(!email||!email.includes('@')){toast('⚠️ Enter a valid email address');return;}
+  if(!pass||pass.length<6){toast('⚠️ Password must be at least 6 characters');return;}
+  const panel=document.getElementById('email-login-panel');
+  if(panel)panel.style.pointerEvents='none';
+  action(email,pass)
+    .then(result=>{
+      currentUser=result.user;
+      toast('✅ Welcome, '+(result.user.displayName||result.user.email||'Player')+'!');
+      _onAuthSuccess(result.user);
+      refreshProfileUI();
+      if(panel){panel.style.display='none';panel.style.pointerEvents='';}
+    })
+    .catch(err=>{
+      if(panel)panel.style.pointerEvents='';
+      if(err.code==='auth/user-not-found'||err.code==='auth/wrong-password'||err.code==='auth/invalid-credential'){
+        toast('❌ Wrong email or password');
+      } else if(err.code==='auth/email-already-in-use'){
+        toast('⚠️ Email already registered — use Sign In instead');
+      } else if(err.code==='auth/weak-password'){
+        toast('⚠️ Password too weak — use at least 6 characters');
+      } else if(err.code==='auth/invalid-email'){
+        toast('❌ Invalid email address');
+      } else if(err.code==='auth/operation-not-allowed'){
+        toast('⚠️ Email login not enabled — contact admin');
+      } else {
+        toast('❌ '+(err.message||err.code));
+      }
+    });
+}
+
+function emailLogin(){
+  _emailAuthFlow((email,pass)=>firebase.auth().signInWithEmailAndPassword(email,pass));
+}
+
+function emailRegister(){
+  _emailAuthFlow((email,pass)=>
+    firebase.auth().createUserWithEmailAndPassword(email,pass).then(result=>{
+      // Set display name from email prefix
+      const name=email.split('@')[0];
+      return result.user.updateProfile({displayName:name}).then(()=>result);
+    })
+  );
+}
+
+function emailForgotPass(){
+  const email=(document.getElementById('el-email')?.value||'').trim();
+  if(!email||!email.includes('@')){toast('⚠️ Enter your email first');return;}
+  if(!firebase.apps.length)firebase.initializeApp(FB_CFG);
+  firebase.auth().sendPasswordResetEmail(email)
+    .then(()=>toast('📧 Reset link sent to '+email))
+    .catch(err=>toast('❌ '+(err.message||err.code)));
 }
 
 function _onAuthSuccess(user){
@@ -10993,6 +11087,7 @@ const RoomBrowser={
     this.refresh();
     // Listen for room changes
     if(this._ref)this._ref.off();
+    if(this._ref)try{this._ref.off();}catch(e){}
     this._ref=db.ref('rooms').orderByChild('status').equalTo('waiting');
     this._ref.on('value',snap=>{
       this._rooms=snap.val()||{};
@@ -11293,9 +11388,11 @@ const Rm={
       if(isHost){try{db.ref(`${fbp(roomCode)}`).remove();}catch(e){}}
     }
     LobbyChat.stop();
+    if(typeof GameChat!=='undefined'&&GameChat.stopFirebase)GameChat.stopFirebase();
     // FIX: Clean up multiplayer intervals
     if(Rm._staleTurnChecker){clearInterval(Rm._staleTurnChecker);Rm._staleTurnChecker=null;}
     if(Rm._aucCountdown){clearInterval(Rm._aucCountdown);Rm._aucCountdown=null;}
+    if(Rm._staleAucChecker){clearInterval(Rm._staleAucChecker);Rm._staleAucChecker=null;}
     localP=[];roomCode='';isHost=false;gameMode='casual';roomName='';
     goScr('sr');
     RoomBrowser.start();
@@ -11553,6 +11650,11 @@ const Rm={
         const _byUid=GS.pls.findIndex(p=>p.uid===currentUser.uid);
         if(_byUid>=0){myIdx=_byUid;myId=GS.pls[_byUid].id;}
       }
+      // FIX: Cancel the player-level onDisconnect so brief disconnects don't
+      // remove player from d.players during an active game.
+      if(!alreadyInGame&&db&&roomCode&&myId&&!isHost){
+        try{db.ref(`${fbp(roomCode)}/players/${myId}`).onDisconnect().cancel();}catch(e){}
+      }
       if(!alreadyInGame){
         // First transition — show themed loader
         ThemedLoader.show(currentTheme, () => {
@@ -11631,8 +11733,10 @@ const Rm={
           if(rem <= 0) {
             clearInterval(Rm._aucCountdown);
             Rm._aucCountdown = null;
-            // Only the auction starter (current turn player) resolves
-            if(GS.pls?.[auc.starterIdx]?.id === myId) {
+            // FIX: Only auction starter resolves; use _aucResolving to prevent double-call
+            const _isStarter=GS.pls?.[auc.starterIdx]?.id === myId;
+            if(_isStarter && !G._aucResolving) {
+              G._aucResolving = true;
               G._rAucOnline(auc);
             }
           }
@@ -11674,15 +11778,52 @@ const Rm={
           G.end();
         }
       }, 10000);
+      // FIX: Also watch for a stuck auction (starter disconnected, endTime passed)
+      Rm._staleAucChecker = setInterval(() => {
+        if(!roomCode||offline||!db)return;
+        db.ref(fbp(roomCode)+'/auc').once('value').then(snap=>{
+          const auc=snap.val();
+          if(!auc||auc.resolved)return;
+          if(Date.now()<auc.endTime+5000)return; // not stale yet
+          // Determine enforcer: next non-bust, non-bot player after starter
+          if(typeof GS==='undefined'||!GS.pls)return;
+          let enfIdx=-1;
+          let nx=(auc.starterIdx+1)%GS.pls.length;
+          for(let g=0;g<GS.pls.length;g++){
+            const np=GS.pls[nx];
+            if(np&&!np.bust&&!np.isBot){enfIdx=nx;break;}
+            nx=(nx+1)%GS.pls.length;
+          }
+          if(enfIdx>=0&&GS.pls[enfIdx].id===myId&&!G._aucResolving){
+            clearInterval(Rm._staleAucChecker);Rm._staleAucChecker=null;
+            toast('⏰ Auction timed out — auto-resolving');
+            G._aucResolving=true;
+            G._rAucOnline(auc);
+          }
+        });
+      // Intentional: this replaces the closing }, 10000); from the stale turn checker above
+      }, 10000);
     }
     // FIX: trade offer stores player INDEX (number), not myId (string). Must compare myIdx (number).
-    if(d.tradeOff&&d.tradeOff.to===myIdx&&myIdx>=0&&!d.tradeOff.resolved)Tr.incoming(d.tradeOff);
+    // FIX: Only show incoming trade if the dialog isn't already open (prevents re-popup on every Firebase update)
+    if(d.tradeOff&&d.tradeOff.to===myIdx&&myIdx>=0&&!d.tradeOff.resolved
+      &&!$('o-tradein')?.classList.contains('open')
+      &&!$('o-tradecounter')?.classList.contains('open'))Tr.incoming(d.tradeOff);
+    // FIX: If tradeOff was removed from Firebase (resolved/declined), close the overlay
+    if(!d.tradeOff&&$('o-tradein')?.classList.contains('open')&&!trPend?._inc?.isCounter){
+      closeOv('o-tradein');trPend=null;
+    }
     // FIX: Player-to-player loan request — show dialog to the target player online
     if(d.loanReq&&d.loanReq.to===myIdx&&myIdx>=0&&!d.loanReq.resolved){
       G._pendingLoanReq=d.loanReq;
       const borrower=GS.pls?.[d.loanReq.from];
       const amt=d.loanReq.amount||0;
-      if(borrower&&amt>0){
+      // FIX: Only open overlay if not already visible (prevents spam on every Firebase push)
+      const _lrAlreadyOpen=$('o-loanreq')?.classList.contains('open');
+      const _lrSeenKey=d.loanReq.from+'_'+d.loanReq.amount+'_'+d.loanReq.ts;
+      const _lrAlreadySeen=(window._loanReqSeen===_lrSeenKey);
+      if(borrower&&amt>0&&!_lrAlreadyOpen&&!_lrAlreadySeen){
+        window._loanReqSeen=_lrSeenKey;
         const infoHtml=`<b>${i18n('loanYouGet')||'You will receive'}:</b> ${fmt(amt)}+${fmt(Math.floor(amt*0.20))} (principal + 20% interest)<br><small style="color:var(--txt3)">(Bank will automatically pay you back after 2 laps — no risk!)</small>`;
         const t=$('loanreq-title'),desc=$('loanreq-desc'),info=$('loanreq-info');
         if(t)t.textContent=`${borrower.name} ${i18n('loanWantsBorrow')||'wants to borrow'}`;
@@ -11690,6 +11831,10 @@ const Rm={
         if(info)info.innerHTML=infoHtml;
         openOv('o-loanreq');
       }
+    }
+    // FIX: If loanReq was resolved/removed, close the overlay and reset seen flag
+    if(!d.loanReq&&$('o-loanreq')?.classList.contains('open')){
+      closeOv('o-loanreq');window._loanReqSeen=null;
     }
   },
   _showCountdownRemote(val){
@@ -15098,8 +15243,12 @@ const G={
   // FIX: Online auction resolution — called by the auction starter's client
   _rAucOnline(auc){
     if(!auc||auc.resolved)return;
-    // Mark as resolved in Firebase first to prevent duplicate resolution
-    db.ref(fbp(roomCode)+'/auc/resolved').set(true).then(()=>{
+    // FIX: Use transaction so only ONE client can claim resolution even in race
+    db.ref(fbp(roomCode)+'/auc').transaction(current=>{
+      if(!current||current.resolved)return; // abort if already resolved by another client
+      return {...current,resolved:true};
+    }).then(result=>{
+      if(!result.committed){G._aucResolving=false;return;} // another client won the race
       if(Rm._aucCountdown){clearInterval(Rm._aucCountdown);Rm._aucCountdown=null;}
       closeOv('o-auc');
       this._busy=false;
@@ -15118,13 +15267,14 @@ const G={
         setLog(`${i18n('auctionNoBids')} ${cellName(BOARD[auc.pos])}`);
       }
       aucD=null;
+      G._aucResolving=false;
       this._push();
       // Remove auction node from Firebase after small delay
       setTimeout(()=>{
         if(db&&roomCode)db.ref(fbp(roomCode)+'/auc').remove();
       },500);
       if(GS.pls?.[GS.cur]?.isBot){setTimeout(()=>Bot.go(),600);}else{setTimeout(()=>this.sync(),350);}
-    });
+    }).catch(()=>{G._aucResolving=false;});
   },
 
   _rAuc(pos){
@@ -15276,6 +15426,8 @@ const G={
   tradeConfirm(){
     if(trPend?.tgt==null){toast(i18n('selectPlayer'));return}
     const mi=offline?(GS._prebustIdx!=null?GS._prebustIdx:GS.cur):myIdx;const ti=trPend.tgt;
+    // FIX: Prevent self-trade
+    if(ti===mi){toast('❌ Cannot trade with yourself');return}
     const mm=Math.max(0,parseInt($('omym').value)||0);
     const tm=Math.max(0,parseInt($('othm').value)||0);
     // Validate money
@@ -15368,7 +15520,11 @@ const G={
     trPend=null;
     setLog(i18n('tradeComplete'),true);toast(i18n('tradeDone'));
     Board.dots();updHUD();updStrip();
-    if(db&&roomCode)db.ref(`${fbp(roomCode)}/tradeOff`).remove();
+    // FIX: Mark resolved BEFORE removing so _upd race cannot re-trigger incoming
+    if(db&&roomCode){
+      db.ref(`${fbp(roomCode)}/tradeOff`).update({resolved:true})
+        .then(()=>db.ref(`${fbp(roomCode)}/tradeOff`).remove()).catch(()=>{});
+    }
     this._push();this.sync();
   },
 
@@ -15649,6 +15805,8 @@ const G={
 
   _doBust(idx,cred){
     const p=GS.pls[idx];p.bust=true;
+    // FIX: Clear any pending rent from this player — no longer relevant after bankruptcy
+    delete GS._pendingRent;
     setLog(`💀 ${p.name} ${i18n('bankrupt')}`,true);toast(`💀 ${p.name} ${i18n('bankrupt')}`);
     // Transfer any leftover positive cash to creditor ONLY when creditor has NOT already
     // been paid in full (e.g. payRent already paid full rent, so no double-transfer).
@@ -15821,6 +15979,10 @@ const G={
         db.ref('rooms/'+roomCode).off();
       }catch(e){}
     }
+    if(typeof GameChat!=='undefined'&&GameChat.stopFirebase)GameChat.stopFirebase();
+    if(Rm._staleTurnChecker){clearInterval(Rm._staleTurnChecker);Rm._staleTurnChecker=null;}
+    if(Rm._staleAucChecker){clearInterval(Rm._staleAucChecker);Rm._staleAucChecker=null;}
+    if(Rm._aucCountdown){clearInterval(Rm._aucCountdown);Rm._aucCountdown=null;}
     applyI18n();goScr('swn');
   },
 
@@ -16001,6 +16163,14 @@ const G={
   loanReqAccept(){
     closeOv('o-loanreq');
     const req=this._pendingLoanReq;if(!req)return;
+    // FIX: Validate lender (this player/myIdx) has enough money before accepting
+    const _lender=GS.pls?.[myIdx];
+    if(_lender&&req.amount>0&&_lender.money<req.amount){
+      toast(`❌ Not enough money to lend ${fmt(req.amount)}`);
+      this._pendingLoanReq=null;
+      if(db&&roomCode)db.ref(`${fbp(roomCode)}/loanReq`).remove();
+      return;
+    }
     this._executeLoanFromPlayer(req.from,req.to,req.amount);
     this._pendingLoanReq=null;
     if(db&&roomCode)db.ref(`${fbp(roomCode)}/loanReq`).remove();
@@ -18397,18 +18567,28 @@ const GameChat=(function(){
     setTimeout(()=>systemMsg('🎮 Game dimulai! Tap pesan untuk reply · 1 emoji = pop di token'),800);
   }
 
+  let _chatRef=null,_chatHandler=null;
   function listenFirebase(){
     if(!db||!roomCode)return;
-    db.ref('rooms/'+roomCode+'/chat').limitToLast(8).on('child_added',snap=>{
+    // FIX: Only attach one listener per game session — detach old one first
+    if(_chatRef){try{_chatRef.off('child_added',_chatHandler);}catch(e){}}
+
+    _chatRef=db.ref('rooms/'+roomCode+'/chat');
+    _chatHandler=snap=>{
       const d=snap.val();if(!d?.name||!d?.msg)return;
       const me=GS.pls?.[myIdx];if(me&&d.name===me.name)return;
       const si=GS.pls?GS.pls.findIndex(p=>p.name===d.name):-1;
       _addMsg(d.name,d.msg,false,d.replyTo||null,si);
       _showTokenBubble(si,d.name,d.msg);
-    });
+    };
+    _chatRef.limitToLast(8).on('child_added',_chatHandler);
+  }
+  function stopFirebase(){
+    if(_chatRef&&_chatHandler){try{_chatRef.off('child_added',_chatHandler);}catch(e){}}
+    _chatRef=null;_chatHandler=null;
   }
 
-  return{send,systemMsg,toggleEmoji,activate,listenFirebase,startReply,cancelReply,
+  return{send,systemMsg,toggleEmoji,activate,listenFirebase,stopFirebase,startReply,cancelReply,
     showTokenBubble:_showTokenBubble,toggleMinimize,toggleExpand};
 })();
 
