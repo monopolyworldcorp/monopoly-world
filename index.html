@@ -4300,7 +4300,7 @@ body.popup-active .tok-emoji-ring{opacity:0!important;pointer-events:none!import
         <button class="host-slot-btn" onclick="Rm.changeSlots(1)" id="slot-plus">+</button>
       </div>
       <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center">
-        <button class="btn btn-outline btn-sm" onclick="Rm.addBot()" id="w-addbot-btn">🤖 Add Bot</button>
+        <button class="btn btn-outline btn-sm" onclick="Rm.confirmLeave()" id="w-exit-btn" style="display:none">🚪 Exit Room</button><button class="btn btn-outline btn-sm" onclick="Rm.addBot()" id="w-addbot-btn">🤖 Add Bot</button>
         <button class="btn btn-outline btn-sm" id="w-ready-btn" onclick="Rm.toggleReady()" style="display:none">✋ Ready</button>
         <button class="btn btn-gold btn-sm" id="wstart" onclick="Rm.startCountdown()" disabled style="margin-left:auto">▶ Start Game</button>
       </div>
@@ -11274,7 +11274,7 @@ const Rm={
       // Kick button (host only, not self, not during countdown)
       const kickHtml=(!p.isHost&&!p.isBot&&isHost)?`<button class="kick-btn" onclick="Rm.kickPlayer('${p.id}')">✕ Kick</button>`:'';
       // Remove bot button
-      const removeBotHtml=(p.isBot&&isHost)?`<button class="kick-btn" onclick="Rm.removeBot('${p.id}')">✕ Remove</button>`:'';
+      const removeBotHtml=(p.isBot&&isHost&&offline)?`<button class="kick-btn" onclick="Rm.removeBot('${p.id}')">✕ Remove</button>`:'';
       r.innerHTML=`${tokenHtml}<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:700">${p.name}${p.isHost?' 👑':''}${p.isBot?' 🤖':''}</div><div style="font-size:10px;color:var(--txt3)">${ch?ch.full:'No token selected'}</div></div>${readyHtml}${kickHtml}${removeBotHtml}`;
       c.appendChild(r);
     });
@@ -11310,9 +11310,11 @@ const Rm={
     const allFilled=localP.length===maxP;
     const allReady=localP.every(p=>p.ready);
     $('wstart').disabled=!(isHost&&allFilled&&allReady);
-    // Add bot button
+    // Show Exit button for online, Add Bot for offline only
+    const exitBtn=document.getElementById('w-exit-btn');
     const addBotBtn=document.getElementById('w-addbot-btn');
-    if(addBotBtn)addBotBtn.style.display=(isHost&&localP.length<maxP)?'inline-flex':'none';
+    if(exitBtn)exitBtn.style.display=(!offline)?'inline-flex':'none';
+    if(addBotBtn)addBotBtn.style.display=(offline&&isHost&&localP.length<maxP)?'inline-flex':'none';
   },
   _upd(d){
     if(!d){
