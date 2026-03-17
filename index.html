@@ -11254,7 +11254,8 @@ const Rm={
         maxPlayers:maxP,status:'waiting',
         gameMode:gameMode,roomName:roomName,locked:roomLocked,
         players:{[myId]:localP[0]},
-        entryFeePerPlayer:mc.entryFee
+        entryFeePerPlayer:mc.entryFee,
+        theme:currentTheme
       };
       if(Object.keys(reqs).length>0)roomData.requirements=reqs;
       await fbSet(roomCode,roomData);
@@ -11338,6 +11339,14 @@ const Rm={
       toast(i18n('roomFull')||'Room penuh atau kamu sudah ada di room ini!');roomCode='';myId='';return;
     }
     db.ref(`${fbp(code)}/players/${myId}`).onDisconnect().remove();
+    // CRITICAL FIX: Force joining player to use the same theme as host
+    // Without this, each player uses their own local theme → different BOARD arrays
+    // → inconsistent property names, prices, rent amounts during gameplay
+    if(d.theme&&d.theme!==currentTheme){
+      if(typeof setTheme==='function'){setTheme(d.theme);}
+      else{currentTheme=d.theme;BOARD=THEMES[d.theme]?.BOARD||BOARD;CGRP_NAME=THEMES[d.theme]?.CGRP_NAME||CGRP_NAME;GRP_CELLS=THEMES[d.theme]?.GRP_CELLS||GRP_CELLS;}
+      toast('🌏 Tema disesuaikan dengan host: '+(THEMES[d.theme]?.name||d.theme));
+    }
     fbListen(code,d2=>this._upd(d2));
     closeOv('o-join-code');
     this._render();this._renderLobbyInfo();goScr('sw');
@@ -11566,7 +11575,7 @@ const Rm={
     const exitBtn=document.getElementById('w-exit-btn');
     const addBotBtn=document.getElementById('w-addbot-btn');
     if(exitBtn)exitBtn.style.display=(!offline)?'inline-flex':'none';
-    if(addBotBtn)addBotBtn.style.display=(isHost&&localP.length<maxP)?'inline-flex':'none';
+    if(addBotBtn)addBotBtn.style.display=(offline&&isHost&&localP.length<maxP)?'inline-flex':'none';
   },
   _upd(d){
     if(!d){
@@ -11673,6 +11682,14 @@ const Rm={
       // FIX: Only transition to game screen once. After that, just update GS + sync.
       // Previously this showed ThemedLoader on EVERY Firebase GS push (every move).
       const alreadyInGame=document.getElementById('sg')?.classList.contains('act');
+      // CRITICAL FIX: Sync theme from room data before loading GS
+      // Ensures all players use identical BOARD data (same prices, rents, names)
+      if(d.theme&&d.theme!==currentTheme){
+        currentTheme=d.theme;
+        BOARD=THEMES[d.theme]?.BOARD||BOARD;
+        CGRP_NAME=THEMES[d.theme]?.CGRP_NAME||CGRP_NAME;
+        GRP_CELLS=THEMES[d.theme]?.GRP_CELLS||GRP_CELLS;
+      }
       GS=d.gs;myIdx=GS.pls.findIndex(p=>p.id===myId);
       // FIX: If myId not found (page refresh / reconnect), fall back to UID match
       if(myIdx===-1&&currentUser){
