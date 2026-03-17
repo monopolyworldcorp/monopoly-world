@@ -11090,8 +11090,15 @@ const RoomBrowser={
     this._ref=db.ref('rooms').orderByChild('status').equalTo('waiting');
     this._ref.on('value',snap=>{
       this._rooms=snap.val()||{};
+      // Clean up ghost rooms in realtime listener too
+      Object.entries(this._rooms).forEach(([code,room])=>{
+        if(room&&(!room.players||Object.keys(room.players).length===0)&&room.status==='waiting'){
+          db.ref('rooms/'+code).remove().catch(()=>{});
+          delete this._rooms[code];
+        }
+      });
       this._renderList();
-    });
+    },err=>{console.warn('RoomBrowser error:',err);this._renderList();});
   },
   stop(){
     if(this._ref){this._ref.off();this._ref=null;}
@@ -11102,6 +11109,13 @@ const RoomBrowser={
     }
     db.ref('rooms').orderByChild('status').equalTo('waiting').once('value',snap=>{
       this._rooms=snap.val()||{};
+      // Clean up ghost rooms: status=waiting but no players (host disconnected, room not cleaned up)
+      Object.entries(this._rooms).forEach(([code,room])=>{
+        if(!room.players||Object.keys(room.players).length===0){
+          db.ref('rooms/'+code).remove().catch(()=>{});
+          delete this._rooms[code];
+        }
+      });
       this._renderList();
     });
   },
@@ -11261,8 +11275,8 @@ const Rm={
     const prof=loadProfile();
     const nm=prof.fullName||(prof.name&&prof.name!=='Player'?prof.name:'Player');
     if(!fbInit()){toast(i18n('firebaseNotSetup'));return}
-    const snap=await db.ref(fbp(code)).once('value');
-    const d=snap.val();
+    let snap,d;
+    try{snap=await db.ref(fbp(code)).once('value');d=snap.val();}catch(e){toast('❌ Tidak dapat terhubung ke server. Periksa koneksi Anda.');return;}
     if(!d){toast(i18n('roomNotFound'));return}
     if(d.status!=='waiting'){toast(i18n('gameStarted'));return}
     if(Object.keys(d.players||{}).length>=(d.maxPlayers||4)){toast(i18n('roomFull'));return}
@@ -11592,6 +11606,17 @@ const Rm={
     // Check if we were kicked — skip this check during an active game
     // (brief disconnects can remove player from d.players mid-game)
     const _activeGameRunning = d.status==='playing' && document.getElementById('sg')?.classList.contains('act');
+    // FIX: If HOST player entry disappeared (brief disconnect/onDisconnect fired), re-add it
+    if(isHost&&myId&&d&&d.status==='waiting'&&db&&roomCode){
+      if(!d.players||!d.players[myId]){
+        const _rprof=loadProfile();
+        const _rnm=_rprof.fullName||(_rprof.name&&_rprof.name!=='Player'?_rprof.name:'Player');
+        const _ruid=currentUser?currentUser.uid:null;
+        db.ref(fbp(roomCode)+'/players/'+myId).set({id:myId,name:_rnm,isHost:true,isBot:false,charId:null,uid:_ruid,ready:false}).catch(()=>{});
+        db.ref(fbp(roomCode)+'/players/'+myId).onDisconnect().remove();
+        db.ref(fbp(roomCode)).onDisconnect().remove();
+      }
+    }
     if(!isHost&&myId&&d.players&&!d.players[myId]&&!_activeGameRunning){
       // Refund entry fee when kicked
       const kickMc=MODE_CONFIG[d.gameMode||gameMode||'casual']||MODE_CONFIG.casual;
