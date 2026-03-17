@@ -10985,6 +10985,9 @@ const RoomBrowser={
       if(!r||r.status!=='waiting')return false;
       // Don't show locked rooms in public list
       if(r.locked)return false;
+      // FIX: Don't show rooms with zero players (ghost/orphan rooms)
+      const playerCount=Object.keys(r.players||{}).length;
+      if(playerCount===0)return false;
       return true;
     });
     if(!entries.length){
@@ -11461,9 +11464,9 @@ const Rm={
     });
     // FIX: Skip lobby render during active gameplay (performance optimization)
     const _inGame=document.getElementById('sg')?.classList.contains('act');
-    // FIX: Auto-delete room from Firebase when all human players have left (lobby stage)
-    if(!_inGame && d && d.status==='waiting') {
-      const humanPlayers=localP.filter(p=>!p.isBot);
+    // FIX: Auto-delete room from Firebase when all human players have left
+    if(d && (d.status==='waiting' || d.status==='playing')) {
+      const humanPlayers=Object.values(d.players||{}).filter(p=>!p.isBot);
       if(humanPlayers.length===0 && isHost && db && roomCode) {
         db.ref('rooms/'+roomCode).remove().catch(()=>{});
         return;
@@ -14527,41 +14530,41 @@ const G={
     }
     else if(card.eff==='nutil'){
       const nx=UTIL.find(t=>t>p.pos)??UTIL[0];
-      if(nx<=p.pos){p.money+=GO_M;toast(`${p.name} ${i18n('passedGo')} +${fmt(GO_M)}`);}
+      if(nx<=p.pos){const _goU=mp(GO_M);p.money+=_goU;toast(`${p.name} ${i18n('passedGo')} +${fmt(_goU)}`);}
       p.pos=nx;GS._utilCardMult=10;
       eff=i18n('advanceTo')+' '+cellName(BOARD[nx])+' (10× 🎲)';Board.tokens();GlowFX.sync();
     }
     else if(card.eff==='payall'){
-      let totalPaid=0;
+      let totalPaid=0;const _payEach=mp(card.amt);
       GS.pls.forEach((pl,i)=>{
         if(i===GS.cur||pl.bust)return;
-        pl.money+=card.amt;
-        totalPaid+=card.amt;
+        pl.money+=_payEach;
+        totalPaid+=_payEach;
       });
       p.money-=totalPaid;
       if(p.money<0){this._bust(GS.cur,-1);return}
-      eff=`-${fmt(totalPaid)} (${fmt(card.amt)} × ${i18n('toEachPlayer')||'each player'})`;
+      eff=`-${fmt(totalPaid)} (${fmt(_payEach)} × ${i18n('toEachPlayer')||'each player'})`;
     }
     else if(card.eff==='ntrans2x'){
       const nx=TRANS.find(t=>t>p.pos)??TRANS[0];
-      if(nx<=p.pos){p.money+=GO_M;toast(`${p.name} ${i18n('passedGo')} +${fmt(GO_M)}`);}
+      if(nx<=p.pos){const _goT=mp(GO_M);p.money+=_goT;toast(`${p.name} ${i18n('passedGo')} +${fmt(_goT)}`);}
       p.pos=nx;GS._cardRentMult=2;
       eff=i18n('advanceTo')+' '+cellName(BOARD[nx])+' (2× rent!)';Board.tokens();GlowFX.sync();
     }
     else if(card.eff==='jail'){this._toJail(GS.cur);GS.rolled=true;eff=i18n('goToJail')+' 🔒'}
     else if(card.eff==='jfree'){p.jfc=(p.jfc||0)+1;eff=i18n('jailFreeCard')}
     else if(card.eff==='btax'){
-      let tax=0;Object.entries(GS.props).forEach(([pos,pr])=>{if(pr.owner===GS.cur)tax+=pr.hotel?card.pht:pr.houses*card.ph});
+      let tax=0;Object.entries(GS.props).forEach(([pos,pr])=>{if(pr.owner===GS.cur)tax+=pr.hotel?mp(card.pht):pr.houses*mp(card.ph)});
       p.money-=tax;GS.fp+=tax;if(p.money<0){this._bust(GS.cur,-1);return}eff=tax?`-${fmt(tax)} ${i18n('buildingTax')}`:i18n('noBuildings');
     }
     else if(card.eff==='colall'){
       // FIX: accumulate total THEN add once — adding p.money inside loop only gave 1x
-      let totalCollected=0;
+      let totalCollected=0;const _colEach=mp(card.amt);
       const bustQueue=[];
       GS.pls.forEach((pl,i)=>{
         if(i===GS.cur||pl.bust)return;
-        pl.money-=card.amt;
-        totalCollected+=card.amt;
+        pl.money-=_colEach;
+        totalCollected+=_colEach;
         if(pl.money<0)bustQueue.push(i);
       });
       p.money+=totalCollected;
@@ -14570,12 +14573,12 @@ const G={
     }
     else if(card.eff==='bday'){
       // FIX: same pattern — accumulate then add once
-      let totalCollected=0;
+      let totalCollected=0;const _bdayEach=mp(card.amt);
       const bustQueue=[];
       GS.pls.forEach((pl,i)=>{
         if(i===GS.cur||pl.bust)return;
-        pl.money-=card.amt;
-        totalCollected+=card.amt;
+        pl.money-=_bdayEach;
+        totalCollected+=_bdayEach;
         if(pl.money<0)bustQueue.push(i);
       });
       p.money+=totalCollected;
@@ -14619,7 +14622,7 @@ const G={
     const payLbl={'id':'Langsung bebas','en':'Released immediately','ja':'すぐに釈放','ru':'Немедленное освобождение','zh':'立即获释','tw':'立即獲釋','ko':'즉시 석방'};
     const rollLbl={'id':'Tidak double → tambah giliran','en':'No double → stay in jail','ja':'ダブルなし→残留','ru':'Не двойка → остаёшься','zh':'非双→留监','tw':'非雙→留監','ko':'더블 아님 → 잔류'};
     const rollTitle={'id':'Lempar Dadu (Double = Bebas)','en':'Roll Dice (Double = Free)','ja':'サイコロ（ダブルで釈放）','ru':'Бросить (Дубль = Свобода)','zh':'掷骰（双数=释放）','tw':'擲骰（雙數=釋放）','ko':'주사위 (더블=석방)'};
-    mk('jb-pay','💸',`${i18n('pay').replace('💸 ','')} ${fmt(JFINE)}`,payLbl[currentLang]||payLbl.id,()=>this.jPay());
+    mk('jb-pay','💸',`${i18n('pay').replace('💸 ','')} ${fmt(mp(JFINE))}`,payLbl[currentLang]||payLbl.id,()=>this.jPay());
     mk('jb-roll','🎲',rollTitle[currentLang]||rollTitle.id,rollLbl[currentLang]||rollLbl.id,()=>this.jRoll());
     if(p.jfc>0)mk('jb-card','🗝️',i18n('useJailCard'),i18n('free'),()=>this.jCard());
     openOv('o-jin');
@@ -14652,8 +14655,8 @@ const G={
           setLog(`${p.name} ${i18n('jailUsedCard')}`,true);updHUD();updStrip();
           GS.rolled=true;GS.dc=0;this._busy=false;
           await this._mv(GS.cur,d1+d2,false);
-        }else if(p.money>=JFINE){
-          p.money-=JFINE;GS.fp+=JFINE;p.inJail=false;p.jt=0;
+        }else if(p.money>=mp(JFINE)){
+          const _jf3=mp(JFINE);p.money-=_jf3;GS.fp+=_jf3;p.inJail=false;p.jt=0;
           GS.rolled=true;GS.dc=0;updHUD();updStrip();
           this._busy=false;
           await this._mv(GS.cur,d1+d2,false);
@@ -15251,7 +15254,7 @@ const G={
       Object.entries(GS.props).forEach(([pos,pr])=>{
         if(pr.owner!==idx||!pr.hotel)return;
         const cell=BOARD[parseInt(pos)];
-        const ref=Math.floor((cell?.hc||500)/2);
+        const ref=Math.floor(mp(cell?.hc||500)/2);
         pr.hotel=false;pr.houses=MAXH;
         p.money+=ref;
         setLog(`🤖 ${p.name} ${i18n('soldBuilding')} ${cellName(cell)} +${fmt(ref)}`,true);
@@ -15276,7 +15279,7 @@ const G={
         });
         if(bestPos!==null){
           const pr=GS.props[bestPos];const cell=BOARD[parseInt(bestPos)];
-          const ref=Math.floor((cell?.hc||200)/2);
+          const ref=Math.floor(mp(cell?.hc||200)/2);
           pr.houses--;p.money+=ref;
           setLog(`🤖 ${p.name} ${i18n('soldBuilding')} ${cellName(cell)} +${fmt(ref)}`,true);
           if(p.money<0)keepSelling=true;
@@ -15287,7 +15290,7 @@ const G={
         if(p.money>=0)return;
         if(pr.owner!==idx||pr.mortgaged||pr.houses||pr.hotel)return;
         const cell=BOARD[parseInt(pos)];
-        const val=cell?.mg||Math.floor((cell?.pr||2000)/2);
+        const val=mp(cell?.mg||Math.floor((cell?.pr||2000)/2));
         pr.mortgaged=true;p.money+=val;
         setLog(`🤖 ${p.name} ${i18n('mortgaged')} ${cellName(cell)} +${fmt(val)}`,true);
       });
@@ -15318,14 +15321,13 @@ const G={
       if(pr.owner!==idx)return;
       const cell=BOARD[parseInt(pos)];
       if(pr.hotel){
-        total+=Math.floor((cell?.hc||500)/2); // sell hotel: half of build cost
-        // After selling hotel → 4 houses, but we simplify: count mortgage value too once buildings gone
-        total+=cell?.mg||0;
+        total+=Math.floor(mp(cell?.hc||500)/2); // sell hotel: half of build cost (multiplied)
+        total+=mp(cell?.mg||0); // mortgage value after buildings gone
       }else if(pr.houses>0){
-        total+=pr.houses*Math.floor((cell?.hc||200)/2); // sell houses: half each
-        total+=cell?.mg||0; // can mortgage once all houses sold
+        total+=pr.houses*Math.floor(mp(cell?.hc||200)/2); // sell houses: half each (multiplied)
+        total+=mp(cell?.mg||0); // can mortgage once all houses sold
       }else if(!pr.mortgaged&&cell?.mg){
-        total+=cell.mg; // can mortgage directly
+        total+=mp(cell.mg); // can mortgage directly (multiplied)
       }
     });
     return total;
@@ -15413,7 +15415,7 @@ const G={
     if(!mine.length){this._openPrebust(idx,cred,this._currentDebt(idx,cred),this._totalAssets(idx));return}
     mine.forEach(([pos,pr])=>{
       const cell=BOARD[parseInt(pos)];const col=cell.g?CGRP_HEX[cell.g]:'#555';
-      const mv=cell.mg||Math.floor((cell.pr||0)/2);
+      const mv=mp(cell.mg||Math.floor((cell.pr||0)/2));
       const item=document.createElement('div');item.className='mp-item';
       item.innerHTML=`<div class="mp-dot" style="background:${col}"></div><div style="flex:1;min-width:0"><div class="mp-n">${cell.e} ${cellName(cell)}</div><div class="mp-d">+${fmt(mv)}</div></div><div class="mp-acts"><button class="mpa mpa-m" onclick="G.prebustMortProp(${pos})">📄 ${i18n('mortgage')}</button></div>`;
       list.appendChild(item);
@@ -15501,7 +15503,7 @@ const G={
         // Mortgaged properties: creditor must pay 10% interest immediately (Monopoly rules)
         if(pr.mortgaged){
           const cell=BOARD[parseInt(pos)];
-          const interest=Math.floor((cell?.mg||Math.floor((cell?.pr||2000)/2))*0.1);
+          const interest=Math.floor(mp(cell?.mg||Math.floor((cell?.pr||2000)/2))*0.1);
           mortgageInterestDue+=interest;
         }
       }else{
@@ -15644,6 +15646,14 @@ const G={
       } else {
         ecoinPanel.style.display = 'none';
       }
+    }
+    // FIX: Clean up Firebase room data after game ends
+    if(db&&roomCode){
+      try{
+        if(isHost)db.ref('rooms/'+roomCode).remove().catch(()=>{});
+        else if(myId)db.ref('rooms/'+roomCode+'/players/'+myId).remove().catch(()=>{});
+        db.ref('rooms/'+roomCode).off();
+      }catch(e){}
     }
     applyI18n();goScr('swn');
   },
@@ -17288,9 +17298,9 @@ Respond with JSON: {"action": "pay" or "extend", "reason": "brief"}`;
         await G._mv(GS.cur, d1 + d2, dbl);
         this._aft(dbl); return;
       }
-      if (jailAction === 'pay' || (!jailAction && (bot.jt >= 2 || (bot.money > JFINE * 4 && Math.random() < 0.6)))) {
-        if (bot.money >= JFINE) {
-          bot.money -= JFINE; GS.fp += JFINE; bot.inJail = false; bot.jt = 0;
+      if (jailAction === 'pay' || (!jailAction && (bot.jt >= 2 || (bot.money > mp(JFINE) * 4 && Math.random() < 0.6)))) {
+        if (bot.money >= mp(JFINE)) {
+          const _bjf=mp(JFINE);bot.money -= _bjf; GS.fp += _bjf; bot.inJail = false; bot.jt = 0;
           GS.rolled = false; updHUD(); updStrip();
           setLog(`🤖 ${bot.name} ${i18n('botPaidJail')}`, true);
           const [d1, d2] = await rollDice(); const dbl = d1 === d2; GS.dice = [d1, d2];
@@ -17321,7 +17331,7 @@ Respond with JSON: {"action": "pay" or "extend", "reason": "brief"}`;
           await G._mv(GS.cur, d1 + d2, false); this._aft(false);
         } else {
           bot.jt++;
-          if (bot.jt >= 3 && bot.money >= JFINE) { bot.money -= JFINE; GS.fp += JFINE; bot.inJail = false; bot.jt = 0; GS.rolled = true; await G._mv(GS.cur, d1 + d2, false); this._aft(false); }
+          if (bot.jt >= 3 && bot.money >= mp(JFINE)) { const _bjf3=mp(JFINE);bot.money -= _bjf3; GS.fp += _bjf3; bot.inJail = false; bot.jt = 0; GS.rolled = true; await G._mv(GS.cur, d1 + d2, false); this._aft(false); }
           else if (bot.jt >= 3) { bot.inJail = false; bot.jt = 0; GS.rolled = true; await G._mv(GS.cur, d1 + d2, false); this._aft(false); }
           else { GS.rolled = true; updStrip(); G._push(); G._systemEnd = true; setTimeout(() => G.end(), 650); }
         }
