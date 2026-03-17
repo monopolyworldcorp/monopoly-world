@@ -10280,6 +10280,15 @@ function quitToMenu(){
 function returnToMenuWithLoader(){
   // Stop current music
   try { MusicSystem.stop(); } catch(e){}
+  // FIX: Clean up Firebase room when returning to menu after game ends
+  if(db&&roomCode){
+    try{
+      // Remove the entire room from Firebase so it doesn't persist as ghost data
+      if(isHost) db.ref('rooms/'+roomCode).remove().catch(()=>{});
+      else db.ref('rooms/'+roomCode+'/players/'+(myId||'')).remove().catch(()=>{});
+      db.ref('rooms/'+roomCode).off();
+    }catch(e){}
+  }
   if(typeof MenuLoadScreen !== 'undefined' && !MenuLoadScreen.isActive()){
     goScr('sm');
     MenuLoadScreen.show({
@@ -11452,6 +11461,14 @@ const Rm={
     });
     // FIX: Skip lobby render during active gameplay (performance optimization)
     const _inGame=document.getElementById('sg')?.classList.contains('act');
+    // FIX: Auto-delete room from Firebase when all human players have left (lobby stage)
+    if(!_inGame && d && d.status==='waiting') {
+      const humanPlayers=localP.filter(p=>!p.isBot);
+      if(humanPlayers.length===0 && isHost && db && roomCode) {
+        db.ref('rooms/'+roomCode).remove().catch(()=>{});
+        return;
+      }
+    }
     if(!_inGame)this._render();
     // Handle countdown from host
     if(d.countdown&&d.countdown.active&&!isHost){
@@ -11797,6 +11814,7 @@ const LobbyChat={
 // ═══ TYCOON MODE PRICE MULTIPLIER ═══
 // Helper to get multiplied cell price during active game
 function cellPrice(cell){ return (cell.pr||0) * (GS.mult||1); }
+function mp(v){ return Math.round((v||0)*(GS.mult||1)); }
 function cellRent(cell,level){ return (cell.r?cell.r[level]:0) * (GS.mult||1); }
 function cellHouseCost(cell){ return (cell.hc||0) * (GS.mult||1); }
 function cellMortgage(cell){ return (cell.mg||0) * (GS.mult||1); }
@@ -14066,7 +14084,8 @@ function showPlayerPopup(playerIdx){
       'Monopoli dunia, satu langkah setiap waktu.',
       'Bot tidak pernah tidur. 🤖'
     ];
-    $('pp-bio').textContent=p.isBot?bios[4]:bios[playerIdx%4];
+    // FIX: Show placeholder bio — real bio will be loaded from Firebase (see stats fetch above)
+    $('pp-bio').textContent=p.isBot?bios[4]:(p.uid?'Loading...':bios[playerIdx%4]);
   }
 
   // Stats: show profile stats for human, current game stats for bots/others
@@ -14075,10 +14094,40 @@ function showPlayerPopup(playerIdx){
     $('pp-wins').textContent = prof.wins;
     $('pp-rate').textContent = prof.games > 0 ? Math.round((prof.wins/prof.games)*100) + '%' : '0%';
     $('pp-earn').textContent = prof.rating + ' pts';
+  } else if(!p.isBot && p.uid && typeof db !== 'undefined' && db) {
+    // FIX: Fetch REAL profile stats from Firebase for other online players
+    $('pp-games').textContent='⏳';$('pp-wins').textContent='⏳';
+    $('pp-rate').textContent='⏳';$('pp-earn').textContent='⏳';
+    db.ref('users/'+p.uid+'/profile').once('value').then(snap=>{
+      const rp=snap.val();
+      if(rp){
+        $('pp-games').textContent=rp.games||0;
+        $('pp-wins').textContent=rp.wins||0;
+        $('pp-rate').textContent=(rp.games>0?Math.round((rp.wins/rp.games)*100):0)+'%';
+        $('pp-earn').textContent=(rp.rating||0)+' pts';
+        // Also show their real bio if available
+        if(rp.bio&&$('pp-bio'))$('pp-bio').textContent=rp.bio;
+        // Show their real avatar if available
+        if(rp.avatarURL&&$('pp-avatar')){
+          $('pp-avatar').src=rp.avatarURL;
+          $('pp-avatar').style.borderRadius='50%';
+          $('pp-avatar').style.objectFit='cover';
+        }
+      } else {
+        // No profile found — show current game stats
+        const totalProps=Object.values(GS.props||{}).filter(pr=>pr.owner===playerIdx);
+        const totalValue=totalProps.reduce((s,pr)=>{const c=BOARD[parseInt(Object.keys(GS.props).find(k=>GS.props[k]===pr))];return s+(c?c.pr||0:0);},0);
+        $('pp-games').textContent='?';$('pp-wins').textContent='?';
+        $('pp-rate').textContent='?';$('pp-earn').textContent=fmt(p.money+totalValue);
+      }
+    }).catch(()=>{
+      $('pp-games').textContent='?';$('pp-wins').textContent='?';
+      $('pp-rate').textContent='?';$('pp-earn').textContent='?';
+    });
   } else {
     const totalProps=Object.values(GS.props||{}).filter(pr=>pr.owner===playerIdx);
     const totalValue=totalProps.reduce((s,pr)=>{const c=BOARD[pr.pos];return s+(c?c.pr||0:0);},0);
-    $('pp-games').textContent='1';
+    $('pp-games').textContent=p.isBot?'∞':'-';
     $('pp-wins').textContent=p.bust?'0':'-';
     $('pp-rate').textContent=p.bust?'0%':'-';
     $('pp-earn').textContent=fmt(p.money+totalValue);
@@ -14287,7 +14336,8 @@ const G={
 
     p.pos=newPos;
     if(passedGO){
-      p.money+=GO_M;toast(`${p.name} ${i18n('passedGo')} +${fmt(GO_M)}`);
+      const _goSal=mp(GO_M);
+      p.money+=_goSal;toast(`${p.name} ${i18n('passedGo')} +${fmt(_goSal)}`);
       p.laps=(p.laps||0)+1;
       // Check loan repayments when passing GO
       if(typeof G._checkLoans==='function')G._checkLoans(idx);
@@ -14306,8 +14356,9 @@ const G={
     setLog(`📍 ${p.name} → ${cellName(cell)}`);
     if(cell.t==='gtj'){this._toJail(idx);GS.rolled=true;openOv('o-jgo');this._push();this.sync();return}
     if(cell.t==='go'){
-      p.money+=GO_M*2;
-      toast(`${i18n('landedGo')} +${fmt(GO_M*2)}`);
+      const _goLand=mp(GO_M)*2;
+      p.money+=_goLand;
+      toast(`${i18n('landedGo')} +${fmt(_goLand)}`);
       p.laps=(p.laps||0)+1;
       if(typeof this._checkLoans==='function')this._checkLoans(idx);
       updHUD();updStrip();
@@ -14325,7 +14376,7 @@ const G={
     }
     if(cell.t==='tax'){
       $('otico').textContent=cell.e;$('ottitle').textContent=cellName(cell);
-      $('otamt').textContent=fmt(cell.amt);$('otdesc').textContent=i18n('payTreasury');
+      $('otamt').textContent=fmt(mp(cell.amt));$('otdesc').textContent=i18n('payTreasury');
       // Keep _busy=true — tax is mandatory; End Turn blocked until payTax() releases it
       openOv('o-tax');this._push();return;
     }
@@ -14356,26 +14407,27 @@ const G={
     // Card-based multiplier (ntrans2x doubles transport rent, nutil forces 10x for utility)
     const cardMult=GS._cardRentMult||1;
     const utilCard=GS._utilCardMult||0;
+    const m=GS.mult||1; // Game mode multiplier (Tycoon=5x)
     // Clear the flags after reading
     delete GS._cardRentMult;delete GS._utilCardMult;
     if(cell.t==='trans'){
       const n=TRANS.filter(t=>GS.props[t]?.owner===pr.owner&&!GS.props[t]?.mortgaged).length;
-      return([500,1000,2000,4000][n-1]||500)*cardMult;
+      return Math.round(([500,1000,2000,4000][n-1]||500)*m*cardMult);
     }
     if(cell.t==='util'){
       const n=UTIL.filter(t=>GS.props[t]?.owner===pr.owner&&!GS.props[t]?.mortgaged).length;
       const d1=GS.dice?.[0]??0;
       const d2=GS.dice?.[1]??0;
       const total=(GS.rolled&&d1>0&&d2>0)?(d1+d2):7;
-      if(utilCard)return total*utilCard*100;
-      return total*(n===2?10:4)*100;
+      if(utilCard)return Math.round(total*utilCard*100*m);
+      return Math.round(total*(n===2?10:4)*100*m);
     }
     if(!cell.r)return 0;
-    if(pr.hotel)return cell.r[5]*cardMult;
-    if(pr.houses>0)return cell.r[pr.houses]*cardMult;
+    if(pr.hotel)return Math.round(cell.r[5]*m*cardMult);
+    if(pr.houses>0)return Math.round(cell.r[pr.houses]*m*cardMult);
     const g=GRP_CELLS[cell.g]||[];
     const all=g.every(nm=>{const c=BOARD.find(b=>b.n===nm);return c&&GS.props[c.p]?.owner===pr.owner&&!GS.props[c.p]?.mortgaged});
-    return(all?cell.r[0]*2:cell.r[0])*cardMult;
+    return Math.round((all?cell.r[0]*2:cell.r[0])*m*cardMult);
   },
 
   payRent(){
@@ -14419,7 +14471,7 @@ const G={
     closeOv('o-tax');
     this._busy=false;// release lock held since _land(tax)
     const p=GS.pls[GS.cur];const cell=BOARD[p.pos];
-    const amt=cell.amt||0;
+    const amt=mp(cell.amt||0);
     p.money-=amt;GS.fp+=amt;
     setLog(`${p.name} ${i18n('paidTax')} ${fmt(amt)}`,true);
     updHUD();updStrip();
@@ -14437,9 +14489,9 @@ const G={
       this._push();this.sync();return;
     }
     GS[key]=(GS[key]+1)%deck.length;
-    const p=GS.pls[GS.cur];let eff='';
-    if(card.eff==='col'){p.money+=card.amt;eff=`+${fmt(card.amt)}`}
-    else if(card.eff==='pay'){p.money-=card.amt;GS.fp+=card.amt;if(p.money<0){this._bust(GS.cur,-1);return}eff=`-${fmt(card.amt)}`}
+    const p=GS.pls[GS.cur];let eff='';const _ca=mp(card.amt);
+    if(card.eff==='col'){p.money+=_ca;eff=`+${fmt(_ca)}`}
+    else if(card.eff==='pay'){p.money-=_ca;GS.fp+=_ca;if(p.money<0){this._bust(GS.cur,-1);return}eff=`-${fmt(_ca)}`}
     if(card.eff==='adv'){
       const tgt=card.tgt;const oldPos=p.pos;
       if(tgt===0){
@@ -14455,7 +14507,7 @@ const G={
         const fwdSteps=(tgt-oldPos+40)%40;
         const passedGO=fwdSteps>0&&tgt<oldPos;
         if(passedGO){
-          p.money+=GO_M;toast(`${p.name} ${i18n('passedGo')} +${fmt(GO_M)}`);
+          const _goC=mp(GO_M);p.money+=_goC;toast(`${p.name} ${i18n('passedGo')} +${fmt(_goC)}`);
         }
         p.pos=tgt;
       }
@@ -14463,7 +14515,7 @@ const G={
     }
     else if(card.eff==='ntrans'){
       const nx=TRANS.find(t=>t>p.pos)??TRANS[0];
-      if(nx<=p.pos){p.money+=GO_M;toast(`${p.name} ${i18n('passedGo')} +${fmt(GO_M)}`);}
+      if(nx<=p.pos){const _goN=mp(GO_M);p.money+=_goN;toast(`${p.name} ${i18n('passedGo')} +${fmt(_goN)}`);}
       p.pos=nx;eff=i18n('advanceTo')+' '+cellName(BOARD[nx]);Board.tokens();GlowFX.sync();
     }
     else if(card.eff==='back'){
@@ -14575,8 +14627,9 @@ const G={
 
   async jPay(){
     closeOv('o-jin');const p=GS.pls[GS.cur];
-    if(p.money<JFINE){toast(i18n('notEnoughMoney'));return}
-    p.money-=JFINE;GS.fp+=JFINE;p.inJail=false;p.jt=0;GS.rolled=false;GS.dc=0;
+    const _jf=mp(JFINE);
+    if(p.money<_jf){toast(i18n('notEnoughMoney'));return}
+    p.money-=_jf;GS.fp+=_jf;p.inJail=false;p.jt=0;GS.rolled=false;GS.dc=0;
     setLog(`${p.name} ${i18n('jailPaid')}`,true);updHUD();updStrip();this._push();this.sync();
   },
 
@@ -14634,7 +14687,7 @@ const G={
     $('opcbar').style.background=cell.g?`linear-gradient(90deg,${col},${col}44)`:'rgba(200,149,42,.2)';
     $('opico').textContent=cell.e;$('opname').textContent=cellName(cell);
     $('opgrp').textContent=cell.g?CGRP_NAME[cell.g]:(cell.t==='trans'?i18n('transport'):i18n('utilities'));
-    const price=cell.pr||(cell.t==='trans'?2000:1500);
+    const price=mp(cell.pr||(cell.t==='trans'?2000:1500));
     let st='';
     if(cell.t==='prop'){
       const lb=[i18n('rollDice').replace(/[🎲 ]/g,''),
@@ -14648,14 +14701,14 @@ const G={
       const rentLabels=[lblBase[currentLang]||'Base','1 🏠','2 🏠','3 🏠','4 🏠','🏨'];
       const buyerMoney=GS.pls[GS.cur]?.money??p.money;
       st=`<div class="sh-row"><span class="l">${lblBuy[currentLang]||'Price'}</span><span class="v">${fmt(price)}</span></div>`
-        +cell.r.map((r,i)=>`<div class="sh-row"><span class="l">${lblRent[currentLang]||'Rent'} ${rentLabels[i]}</span><span class="v">${fmt(r)}</span></div>`).join('')
-        +`<div class="sh-row"><span class="l">${lblHouse[currentLang]||'Build'}</span><span class="v">${fmt(cell.hc)}</span></div>`
-        +`<div class="sh-row"><span class="l">${lblMort[currentLang]||'Mortgage'}</span><span class="v">${fmt(cell.mg)}</span></div>`
+        +cell.r.map((r,i)=>`<div class="sh-row"><span class="l">${lblRent[currentLang]||'Rent'} ${rentLabels[i]}</span><span class="v">${fmt(mp(r))}</span></div>`).join('')
+        +`<div class="sh-row"><span class="l">${lblHouse[currentLang]||'Build'}</span><span class="v">${fmt(mp(cell.hc))}</span></div>`
+        +`<div class="sh-row"><span class="l">${lblMort[currentLang]||'Mortgage'}</span><span class="v">${fmt(mp(cell.mg))}</span></div>`
         +`<div class="sh-row"><span class="l">${lblBalance[currentLang]||'Balance'}</span><span class="v" style="color:${buyerMoney>=price?'#4ade80':'#f87171'}">${fmt(buyerMoney)}</span></div>`;
     }else if(cell.t==='trans'){
       const lblHub={'id':'hub','en':'hub','ja':'駅','ru':'хаб','zh':'枢纽','tw':'樞紐','ko':'허브'};
       const lblRent={'id':'Sewa','en':'Rent','ja':'家賃','ru':'Аренда','zh':'租金','tw':'租金','ko':'임대료'};
-      st=[500,1000,2000,4000].map((r,i)=>`<div class="sh-row"><span class="l">${lblRent[currentLang]||'Rent'} ${i+1} ${lblHub[currentLang]||'hub'}</span><span class="v">${fmt(r)}</span></div>`).join('');
+      st=[500,1000,2000,4000].map((r,i)=>`<div class="sh-row"><span class="l">${lblRent[currentLang]||'Rent'} ${i+1} ${lblHub[currentLang]||'hub'}</span><span class="v">${fmt(mp(r))}</span></div>`).join('');
     }else{
       const u1={'id':'Sewa (1 utilitas)','en':'Rent (1 utility)','ja':'賃料（1施設）','ru':'Аренда (1 услуга)','zh':'租金（1个公用）','tw':'租金（1個公用）','ko':'임대료 (1개)'};
       const u2={'id':'Sewa (2 utilitas)','en':'Rent (2 utilities)','ja':'賃料（2施設）','ru':'Аренда (2 услуги)','zh':'租金（2个公用）','tw':'租金（2個公用）','ko':'임대료 (2개)'};
@@ -14693,11 +14746,11 @@ const G={
         const canB=this._canBld(cell.p,pi)&&!pr.hotel;
         const buildLbl={'id':'Hotel','en':'Hotel','ja':'ホテル','ru':'Отель','zh':'酒店','tw':'飯店','ko':'호텔'};
         const houseLbl={'id':'Rumah','en':'House','ja':'家','ru':'Дом','zh':'房子','tw':'房子','ko':'집'};
-        mk('sb-green',pr.houses>=MAXH?`🏨 ${buildLbl[currentLang]||'Hotel'}`:`🏠 ${houseLbl[currentLang]||'House'} ${fmt(cell.hc)}`,()=>this.bld(cell.p),!canB||pr.hotel);
+        mk('sb-green',pr.houses>=MAXH?`🏨 ${buildLbl[currentLang]||'Hotel'}`:`🏠 ${houseLbl[currentLang]||'House'} ${fmt(mp(cell.hc))}`,()=>this.bld(cell.p),!canB||pr.hotel);
         if(pr.houses>0||pr.hotel)mk('sb-ghost',`💰 ${i18n('sell')}`,()=>this.sldBld(cell.p));
       }
-      if(!pr.mortgaged)mk('sb-red',`📄 ${i18n('mortgage')} ${fmt(cell.mg||Math.floor(price/2))}`,()=>this.mort(cell.p),pr.houses>0||pr.hotel);
-      else{const rc=Math.floor((cell.mg||(price/2))*1.1);mk('sb-green',`✅ ${i18n('unmortgage')} ${fmt(rc)}`,()=>this.unmort(cell.p),p.money<rc)}
+      if(!pr.mortgaged)mk('sb-red',`📄 ${i18n('mortgage')} ${fmt(mp(cell.mg||Math.floor((cell.pr||(cell.t==='trans'?2000:1500))/2)))}`,()=>this.mort(cell.p),pr.houses>0||pr.hotel);
+      else{const rc=Math.floor(mp(cell.mg||Math.floor((cell.pr||(cell.t==='trans'?2000:1500))/2))*1.1);mk('sb-green',`✅ ${i18n('unmortgage')} ${fmt(rc)}`,()=>this.unmort(cell.p),p.money<rc)}
       mk('sb-ghost',i18n('close'),()=>closeOv('o-prop'));
     }else mk('sb-ghost',i18n('close'),()=>closeOv('o-prop'));
     openOv('o-prop');
@@ -14734,7 +14787,7 @@ const G={
     closeOv('o-prop');const p=GS.pls[GS.cur];const cell=BOARD[pos];
     // CRITICAL: Player must be physically standing on this cell to buy it
     if(p.pos!==pos){toast(i18n('notYours')||'Must land on property to buy!');return}
-    const price=cell.pr||(cell.t==='trans'?2000:1500);
+    const price=mp(cell.pr||(cell.t==='trans'?2000:1500));
     if(p.money<price){toast(i18n('notEnoughMoney'));return}
     if(GS.props[pos]){toast(i18n('propOwnerChanged')||'Property already owned');return}
     p.money-=price;GS.props[pos]={owner:GS.cur,houses:0,hotel:false,mortgaged:false};
@@ -14747,13 +14800,13 @@ const G={
     const p=GS.pls[GS.cur];
     if(!_internal&&p.pos!==pos){toast(i18n('notYours')||'Must land on property!');return;}
     closeOv('o-prop');const cell=BOARD[pos];
-    aucD={pos,high:100,winner:-1};
+    aucD={pos,high:mp(100),winner:-1};
     // FIX: In online multiplayer, write auction state to Firebase so all players can bid
     if(!offline&&db&&roomCode){
       const allBots=GS.pls.filter(p=>!p.isBot).length<=1;
       const AUC_TIME_MP=allBots?20:40;
       db.ref(fbp(roomCode)+'/auc').set({
-        pos:pos,highBid:100,highBidder:-1,highBidderName:'',
+        pos:pos,highBid:mp(100),highBidder:-1,highBidderName:'',
         endTime:Date.now()+AUC_TIME_MP*1000,
         starterIdx:GS.cur,resolved:false,
         bidLog:[]
@@ -14950,8 +15003,9 @@ const G={
     closeOv('o-prop');const p=GS.pls[GS.cur];const cell=BOARD[pos];const pr=GS.props[pos];
     if(!pr||pr.owner!==GS.cur){toast(i18n('notYours'));return}
     if(!this._canBld(pos,GS.cur)){toast(i18n('buildEvenly'));return}
-    if(p.money<cell.hc){toast(i18n('notEnoughMoney'));return}
-    p.money-=cell.hc;
+    const _hc=mp(cell.hc);
+    if(p.money<_hc){toast(i18n('notEnoughMoney'));return}
+    p.money-=_hc;
     if(pr.houses>=MAXH){pr.hotel=true;pr.houses=0;setLog(`${p.name} ${i18n('builtHotel')} ${cellName(cell)}!`,true)}
     else{pr.houses++;setLog(`${p.name} ${i18n('builtHouse')}${pr.houses} ${cellName(cell)}`,true)}
     Board.dots();updHUD();updStrip();this._push();this.sync();
@@ -14977,7 +15031,7 @@ const G={
       });
       if(!canSell){toast(i18n('sellEvenly'));return}
     }
-    const ref=Math.floor(cell.hc/2);
+    const ref=Math.floor(mp(cell.hc)/2);
     if(pr.hotel){pr.hotel=false;pr.houses=MAXH}else pr.houses--;
     p.money+=ref;setLog(`${p.name} ${i18n('soldBuilding')} ${cellName(cell)} +${fmt(ref)}`,true);
     Board.dots();updHUD();updStrip();this._push();this.sync();
@@ -14991,7 +15045,7 @@ const G={
     if(!pr||pr.owner!==ownerIdx){toast(i18n('notYours'));return}
     if(pr.houses>0||pr.hotel){toast(i18n('sellFirst'));return}
     if(pr.mortgaged){toast(i18n('mortgagedLabel')||'Already mortgaged');return}
-    const val=cell.mg||Math.floor((cell.pr||2000)/2);
+    const val=mp(cell.mg||Math.floor((cell.pr||2000)/2));
     pr.mortgaged=true;p.money+=val;
     setLog(`${p.name} ${i18n('mortgaged')} ${cellName(cell)} +${fmt(val)}`,true);toast(`📄 +${fmt(val)}`);
     Board.dots();updHUD();updStrip();this._push();this.sync();
@@ -15004,7 +15058,7 @@ const G={
     const ownerIdx=(GS._prebustIdx!=null)?GS._prebustIdx:GS.cur;
     const p=GS.pls[ownerIdx];const cell=BOARD[pos_int];const pr=GS.props[pos_int];
     if(!pr||pr.owner!==ownerIdx){toast(i18n('notYours'));return}
-    const cost=Math.floor((cell.mg||Math.floor((cell.pr||2000)/2))*1.1);
+    const cost=Math.floor(mp(cell.mg||Math.floor((cell.pr||2000)/2))*1.1);
     if(p.money<cost){toast(i18n('notEnoughMoney'));return}
     pr.mortgaged=false;p.money-=cost;
     setLog(`${p.name} ${i18n('unmortgaged')} ${cellName(cell)} -${fmt(cost)}`,true);
@@ -15482,11 +15536,11 @@ const G={
       if(pr.owner!==pIdx)return;
       const cell=BOARD[parseInt(pos)];if(!cell)return;
       // Use mortgage value (liquidation value) for properties, not full buy price
-      const mortgageVal=cell.mg||Math.floor((cell.pr||(cell.t==='trans'?2000:1500))/2);
+      const mortgageVal=mp(cell.mg||Math.floor((cell.pr||(cell.t==='trans'?2000:1500))/2));
       if(!pr.mortgaged)netWorth+=mortgageVal*2;// unmortgaged: full value (2× mortgage)
       else netWorth+=mortgageVal; // mortgaged: include mortgage (liquidation) value
-      if(pr.hotel)netWorth+=Math.floor((cell.hc||500)/2);// hotel sell-back value
-      else if(pr.houses>0)netWorth+=pr.houses*Math.floor((cell.hc||200)/2);// house sell-back value
+      if(pr.hotel)netWorth+=Math.floor(mp(cell.hc||500)/2);// hotel sell-back value
+      else if(pr.houses>0)netWorth+=pr.houses*Math.floor(mp(cell.hc||200)/2);// house sell-back value
     });
     $('wmoney').textContent=fmt(netWorth);
     const np=Object.values(GS.props).filter(pr=>pr.owner===pIdx).length;
@@ -15499,10 +15553,10 @@ const G={
       Object.entries(GS.props).forEach(([pos,pr])=>{
         if(pr.owner!==plIdx)return;
         const c=BOARD[parseInt(pos)];if(!c)return;
-        const mortVal=c.mg||Math.floor((c.pr||(c.t==='trans'?2000:1500))/2);
+        const mortVal=mp(c.mg||Math.floor((c.pr||(c.t==='trans'?2000:1500))/2));
         if(!pr.mortgaged) nw += mortVal*2; else nw += mortVal;
-        if(pr.hotel)nw+=Math.floor((c.hc||500)/2);
-        else if(pr.houses>0)nw+=pr.houses*Math.floor((c.hc||200)/2);
+        if(pr.hotel)nw+=Math.floor(mp(c.hc||500)/2);
+        else if(pr.houses>0)nw+=pr.houses*Math.floor(mp(c.hc||200)/2);
       });
       return nw;
     };
@@ -15619,7 +15673,9 @@ const G={
     if(GS.pls[nxt].isBot){
       if(broll){broll.disabled=true;broll.style.opacity='.18';}
       if(bend){bend.disabled=true;bend.style.opacity='.18';}
-      setTimeout(()=>Bot.go(),1000);
+      // FIX: Only HOST executes bot turns in online multiplayer.
+      // Other clients just wait for Firebase GS updates from the host.
+      if(offline||isHost) setTimeout(()=>Bot.go(),1000);
     }
     else{
       this.sync();
