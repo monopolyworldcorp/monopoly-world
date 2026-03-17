@@ -10983,9 +10983,9 @@ document.querySelectorAll('.ov').forEach(el=>{
 // FIREBASE
 // ════════════════════════════════════════════
 function fbInit(){
-  try{if(FB_CFG.apiKey==='YOUR_API_KEY'){console.error('FB: API key not set');return false;}
+  try{if(FB_CFG.apiKey==='YOUR_API_KEY')return false;
   if(!firebase.apps.length)firebase.initializeApp(FB_CFG);
-  db=firebase.database();console.log('fbInit OK');return true;}catch(e){console.error('fbInit error:',e);toast('❌ Firebase init error: '+e.message);return false;}}
+  db=firebase.database();return true;}catch(e){return false;}
 }
 const fbp=c=>`rooms/${c}`;
 async function fbSet(c,d){d._lastUpdate=firebase.database.ServerValue.TIMESTAMP;await db.ref(fbp(c)).set(d)}
@@ -11049,7 +11049,7 @@ const Rm={
       await fbSet(roomCode,roomData);
       fbListen(roomCode,d=>this._upd(d));
       db.ref(`${fbp(roomCode)}/players/${myId}`).onDisconnect().remove();
-    }catch(e){console.error('Room create error:',e);toast('❌ Error: '+e.message);return}
+    }catch(e){openOv('o-fb');return}
     closeOv('o-create-room');
     this._render();this._renderLobbyInfo();goScr('sw');
     const lcp=document.getElementById('lobby-chat-panel');if(lcp)lcp.style.display='block';
