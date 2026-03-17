@@ -6575,6 +6575,8 @@ function sendFriendRequest(targetUid){
     if(!prof.sentRequests)prof.sentRequests=[];
     if(!prof.sentRequests.includes(targetUid))prof.sentRequests.push(targetUid);
     _saveProfileObj(prof);
+    // FIX: Also sync sentRequests to cloud so acceptFriend() can clean them up
+    syncProfileToCloud(prof);
     // Immediately update button to show "Pending" in search results
     const list=document.getElementById('fr-search-results');
     if(list){
@@ -6757,12 +6759,16 @@ function checkInvites(){
     if(!invites)return;
     Object.entries(invites).forEach(([fromUid,inv])=>{
       if(Date.now()-inv.timestamp<60000){ // Only show invites from last 60 seconds
-        const accept=confirm('🎮 '+inv.fromName+' invited you to play! Room: '+inv.roomCode+'\n\nJoin now?');
-        if(accept){
-          const rjc=document.getElementById('rjc');
-          if(rjc)rjc.value=inv.roomCode;
-          goRoom();
-        }
+        // FIX: Use non-blocking toast + auto-join instead of blocking confirm()
+        const invToast=document.createElement('div');
+        invToast.style.cssText='position:fixed;top:60px;left:50%;transform:translateX(-50%);z-index:99999;background:linear-gradient(135deg,#1a1a2e,#16213e);border:1px solid rgba(200,149,42,.4);border-radius:12px;padding:14px 20px;color:#fff;font-size:13px;display:flex;gap:12px;align-items:center;box-shadow:0 8px 32px rgba(0,0,0,.5);max-width:90vw';
+        invToast.innerHTML='<div style="flex:1"><div style="font-weight:700;margin-bottom:4px">🎮 '+inv.fromName+' invited you!</div><div style="font-size:11px;color:rgba(255,255,255,.6)">Room: '+inv.roomCode+'</div></div><button class="_inv_j" style="padding:8px 16px;background:linear-gradient(135deg,rgba(34,197,94,.3),rgba(34,197,94,.15));border:1px solid rgba(34,197,94,.4);border-radius:8px;color:#4ade80;font-weight:700;font-size:12px;cursor:pointer">Join</button><button class="_inv_d" style="padding:8px 12px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:8px;color:rgba(255,255,255,.5);font-size:12px;cursor:pointer">✕</button>';
+        document.body.appendChild(invToast);
+        const _rc=inv.roomCode;
+        const _removeToast=()=>{invToast.style.opacity='0';invToast.style.transition='opacity .3s';setTimeout(()=>invToast.remove(),300);};
+        invToast.querySelector('._inv_j').onclick=()=>{_removeToast();Rm.joinRoom(_rc);};
+        invToast.querySelector('._inv_d').onclick=_removeToast;
+        setTimeout(_removeToast,15000);
       }
       // Remove processed invite
       db.ref('invites/'+currentUser.uid+'/'+fromUid).remove();
@@ -11104,6 +11110,8 @@ const Rm={
       await fbSet(roomCode,roomData);
       fbListen(roomCode,d=>this._upd(d));
       db.ref(`${fbp(roomCode)}/players/${myId}`).onDisconnect().remove();
+      // FIX: Host disconnect in lobby should clean up the entire room
+      if(isHost) db.ref(fbp(roomCode)).onDisconnect().remove();
     }catch(e){openOv('o-fb');return}
     closeOv('o-create-room');
     this._render();this._renderLobbyInfo();goScr('sw');
@@ -11120,6 +11128,9 @@ const Rm={
     if(!d){toast(i18n('roomNotFound'));return}
     if(d.status!=='waiting'){toast(i18n('gameStarted'));return}
     if(Object.keys(d.players||{}).length>=(d.maxPlayers||4)){toast(i18n('roomFull'));return}
+    // FIX: Prevent same Firebase UID from joining room twice (e.g. multiple tabs)
+    const existingUids=Object.values(d.players||{}).map(p=>p.uid).filter(Boolean);
+    if(currentUser&&existingUids.includes(currentUser.uid)){toast('⚠️ You are already in this room!');return}
     // Check join requirements
     if(d.requirements){
       const rq=d.requirements;
@@ -11148,7 +11159,20 @@ const Rm={
     roomName=d.roomName||'Room';roomLocked=d.locked||false;
     const uid=currentUser.uid;
     const me={id:myId,name:nm,isHost:false,isBot:false,charId:null,uid:uid,ready:false,entryPaid:mc.entryFee};
-    await db.ref(`${fbp(code)}/players/${myId}`).set(me);
+    // FIX: Use Firebase transaction to atomically check capacity and join
+    const joinResult=await db.ref(fbp(code)+'/players').transaction(players=>{
+      if(players===null)players={};
+      if(Object.keys(players).length>=(d.maxPlayers||4))return; // abort: room full
+      // Double-check UID not already present
+      if(Object.values(players).some(p=>p.uid===uid))return; // abort: already in room
+      players[myId]=me;
+      return players;
+    });
+    if(!joinResult.committed){
+      // Transaction aborted — refund entry fee if paid
+      if(mc.entryFee>0){const curBal=getECoinBalance();setECoinBalance(curBal+mc.entryFee);}
+      toast(i18n('roomFull')||'Room is full or you are already in it!');roomCode='';return;
+    }
     db.ref(`${fbp(code)}/players/${myId}`).onDisconnect().remove();
     fbListen(code,d2=>this._upd(d2));
     closeOv('o-join-code');
@@ -11218,6 +11242,9 @@ const Rm={
       if(isHost){try{db.ref(`${fbp(roomCode)}`).remove();}catch(e){}}
     }
     LobbyChat.stop();
+    // FIX: Clean up multiplayer intervals
+    if(Rm._staleTurnChecker){clearInterval(Rm._staleTurnChecker);Rm._staleTurnChecker=null;}
+    if(Rm._aucCountdown){clearInterval(Rm._aucCountdown);Rm._aucCountdown=null;}
     localP=[];roomCode='';isHost=false;gameMode='casual';roomName='';
     goScr('sr');
     RoomBrowser.start();
@@ -11328,7 +11355,8 @@ const Rm={
       // Kick button (host only, not self, not during countdown)
       const kickHtml=(!p.isHost&&!p.isBot&&isHost)?`<button class="kick-btn" onclick="Rm.kickPlayer('${p.id}')">✕ Kick</button>`:'';
       // Remove bot button
-      const removeBotHtml=(p.isBot&&isHost&&offline)?`<button class="kick-btn" onclick="Rm.removeBot('${p.id}')">✕ Remove</button>`:'';
+      // FIX: Allow host to remove bots in both online and offline mode
+      const removeBotHtml=(p.isBot&&isHost)?`<button class="kick-btn" onclick="Rm.removeBot('${p.id}')">✕ Remove</button>`:'';
       const slotNum=localP.indexOf(p)+1;
       const slotLabel=slotNum===1
         ?`<span style="font-size:9px;color:var(--gold2);font-weight:700">🥇 Slot 1 · Goes First</span>`
@@ -11422,7 +11450,9 @@ const Rm={
       const tb=parseInt((b.id||'').replace(/[^0-9]/g,''))||0;
       return ta-tb;
     });
-    this._render();
+    // FIX: Skip lobby render during active gameplay (performance optimization)
+    const _inGame=document.getElementById('sg')?.classList.contains('act');
+    if(!_inGame)this._render();
     // Handle countdown from host
     if(d.countdown&&d.countdown.active&&!isHost){
       this._showCountdownRemote(d.countdown.value);
@@ -11445,8 +11475,119 @@ const Rm={
         });
       } else {
         // Already in game — silently update state from Firebase push
-        requestAnimationFrame(()=>{setTimeout(()=>{Board.draw();Board.tokens();Board.dots();updHUD();updStrip();G.sync();},80);});
+        // FIX: Don't re-draw entire board on every state update — only update tokens/dots/HUD
+        requestAnimationFrame(()=>{setTimeout(()=>{Board.tokens();Board.dots();updHUD();updStrip();G.sync();},80);});
       }
+    }
+    // FIX: Multiplayer auction sync — listen for auction state changes
+    if(!offline && d.auc && !d.auc.resolved) {
+      // Show auction overlay on all clients
+      const auc = d.auc;
+      const cell = BOARD[auc.pos];
+      if(cell) {
+        aucD = {pos: auc.pos, high: auc.highBid, winner: auc.highBidder};
+        $('oaico').textContent = cell.e;
+        $('oaname').textContent = cellName(cell);
+        $('oagrp').textContent = cell.g ? CGRP_NAME[cell.g] : '';
+        $('oahi').textContent = fmt(auc.highBid);
+        $('oaldr').textContent = auc.highBidderName || i18n('noBids');
+        // Update bid log
+        const logEl = $('oalog');
+        if(logEl && auc.bidLog && Array.isArray(auc.bidLog)) {
+          logEl.innerHTML = '';
+          [...auc.bidLog].reverse().forEach(b => {
+            const r = document.createElement('div');
+            r.className = 'bidrow top';
+            r.textContent = `${b.name}: ${fmt(b.amount)}`;
+            logEl.appendChild(r);
+          });
+        }
+        // Timer based on endTime
+        const remaining = Math.max(0, Math.round((auc.endTime - Date.now()) / 1000));
+        const numEl = $('oat'); if(numEl) numEl.textContent = remaining;
+        // Quick bid buttons for this player
+        const qb = $('oauc-quickbids');
+        if(qb && myIdx >= 0) {
+          qb.innerHTML = '';
+          const myMoney = GS.pls[myIdx]?.money || 0;
+          [200, 500, 1000, 2000].forEach(amt => {
+            if(amt > myMoney) return;
+            const btn = document.createElement('button');
+            btn.className = 'sb';
+            btn.style.cssText = 'flex:1;min-width:60px;padding:7px 6px;font-size:11px;background:rgba(200,149,42,.12);border:1px solid rgba(200,149,42,.3);color:var(--gold2);border-radius:6px;cursor:pointer';
+            btn.textContent = `+${fmt(amt)}`;
+            btn.onclick = () => { const cur = aucD?.high || 100; $('oainp').value = cur + amt; };
+            qb.appendChild(btn);
+          });
+        }
+        // Open overlay if not already open
+        if(!$('o-auc')?.classList.contains('open')) {
+          openOv('o-auc');
+          // Lock game buttons during auction
+          G._busy = true;
+          const rb = $('broll'), eb = $('bend');
+          if(rb) { rb.disabled = true; rb.style.opacity = '.1'; }
+          if(eb) { eb.disabled = true; eb.style.opacity = '.1'; }
+        }
+        // Start/update local countdown timer synced to endTime
+        if(Rm._aucCountdown) clearInterval(Rm._aucCountdown);
+        Rm._aucCountdown = setInterval(() => {
+          const rem = Math.max(0, Math.round((auc.endTime - Date.now()) / 1000));
+          const numEl2 = $('oat'); if(numEl2) numEl2.textContent = rem;
+          // Update ring/progress if present
+          const AUC_TIME = Math.round((auc.endTime - (auc.endTime - 40000)) / 1000) || 40;
+          const CIRC = 2 * Math.PI * 32;
+          const ratio = rem / AUC_TIME;
+          const ringFill = $('oauc-ring-fill');
+          if(ringFill) ringFill.style.strokeDashoffset = `${CIRC * (1 - ratio)}`;
+          const fill = $('oauc-progress-fill');
+          if(fill) fill.style.width = `${ratio * 100}%`;
+          if(rem <= 0) {
+            clearInterval(Rm._aucCountdown);
+            Rm._aucCountdown = null;
+            // Only the auction starter (current turn player) resolves
+            if(GS.pls?.[auc.starterIdx]?.id === myId) {
+              G._rAucOnline(auc);
+            }
+          }
+        }, 1000);
+      }
+    }
+    // Auction ended — clean up
+    if(!offline && !d.auc && $('o-auc')?.classList.contains('open')) {
+      if(Rm._aucCountdown) { clearInterval(Rm._aucCountdown); Rm._aucCountdown = null; }
+      closeOv('o-auc');
+      G._busy = false;
+      setTimeout(() => G.sync(), 350);
+    }
+    // FIX: Cross-client stale turn detector — if a player disconnects during their turn,
+    // another client will auto-skip after 2 minutes to prevent permanent game freeze
+    if(!offline && d.status==='playing' && d.gs) {
+      if(Rm._staleTurnChecker) clearInterval(Rm._staleTurnChecker);
+      Rm._staleTurnChecker = setInterval(() => {
+        if(!roomCode || offline || !GS?.pls || !GS._turnStartTs) return;
+        const elapsed = Date.now() - GS._turnStartTs;
+        if(elapsed < 120000) return; // Not stale yet (2 min threshold)
+        const curP = GS.pls[GS.cur];
+        if(!curP || curP.bust || curP.isBot) return;
+        if(curP.id === myId) return; // My own idle timer handles my turn
+        // Determine who should act as "enforcer": the next non-bust non-bot player after idle player
+        let enforcerIdx = -1;
+        let nxt = (GS.cur + 1) % GS.pls.length;
+        for(let g = 0; g < GS.pls.length; g++) {
+          const np = GS.pls[nxt];
+          if(!np.bust && !np.isBot) { enforcerIdx = nxt; break; }
+          nxt = (nxt + 1) % GS.pls.length;
+        }
+        if(enforcerIdx >= 0 && GS.pls[enforcerIdx].id === myId) {
+          clearInterval(Rm._staleTurnChecker);
+          Rm._staleTurnChecker = null;
+          toast('⏰ ' + curP.name + ' timed out — skipping turn');
+          setLog('⏰ ' + curP.name + ' disconnected — turn skipped', true);
+          G._systemEnd = true;
+          G.end();
+        }
+      }, 10000);
     }
     // FIX: trade offer stores player INDEX (number), not myId (string). Must compare myIdx (number).
     if(d.tradeOff&&d.tradeOff.to===myIdx&&myIdx>=0&&!d.tradeOff.resolved)Tr.incoming(d.tradeOff);
@@ -11535,6 +11676,8 @@ const Rm={
   },
   async _doStart(){
     if(!isHost||localP.length<2)return;
+    // FIX: Cancel room-level onDisconnect so host disconnect during game doesn't delete room
+    if(db&&roomCode){try{db.ref(fbp(roomCode)).onDisconnect().cancel();}catch(e){}}
     // All players already have tokens picked - go directly to game
     // Bots already have tokens from addBot
     if(db)await fbUp(roomCode,{status:'playing'});
@@ -11766,7 +11909,7 @@ function mkGS(players){
     const ch=CHARS.find(c=>c.id===p.charId)||CHARS[i%6];
     return{id:p.id,name:p.name,isBot:p.isBot,charId:ch.id,color:ch.color,money:startM,pos:0,inJail:false,jt:0,jfc:0,bust:false,uid:p.uid||null,laps:0,slotIndex:i};
   });
-  return{pls,cur:0,props:{},fp:0,ci:0,di:0,cd,dd,rolled:false,dice:[1,1],dc:0,loans:[],loanIdCounter:0,gameMode:gameMode,mult:mult};
+  return{pls,cur:0,props:{},fp:0,ci:0,di:0,cd,dd,rolled:false,dice:[1,1],dc:0,loans:[],loanIdCounter:0,gameMode:gameMode,mult:mult,_turnStartTs:Date.now()};
 }
 
 // ════════════════════════════════════════════
@@ -14113,6 +14256,8 @@ const G={
     if(GS.rolled&&!(GS.dice[0]===GS.dice[1]))return;
     if(p.inJail){this._jailOpts();return}
     this._busy=true;$('broll').disabled=true;$('bend').disabled=true;
+    // FIX: Update turn timestamp as heartbeat (proves player is still connected)
+    GS._turnStartTs=Date.now();
     try{
       const[d1,d2]=await rollDice();
       const dbl=d1===d2;GS.dice=[d1,d2];
@@ -14603,6 +14748,17 @@ const G={
     if(!_internal&&p.pos!==pos){toast(i18n('notYours')||'Must land on property!');return;}
     closeOv('o-prop');const cell=BOARD[pos];
     aucD={pos,high:100,winner:-1};
+    // FIX: In online multiplayer, write auction state to Firebase so all players can bid
+    if(!offline&&db&&roomCode){
+      const allBots=GS.pls.filter(p=>!p.isBot).length<=1;
+      const AUC_TIME_MP=allBots?20:40;
+      db.ref(fbp(roomCode)+'/auc').set({
+        pos:pos,highBid:100,highBidder:-1,highBidderName:'',
+        endTime:Date.now()+AUC_TIME_MP*1000,
+        starterIdx:GS.cur,resolved:false,
+        bidLog:[]
+      });
+    }
     $('oaico').textContent=cell.e;$('oaname').textContent=cellName(cell);
     $('oagrp').textContent=cell.g?CGRP_NAME[cell.g]:'';
     $('oahi').textContent=fmt(100);$('oaldr').textContent=i18n('noBids');
@@ -14692,10 +14848,61 @@ const G={
     const p=GS.pls[bidderIdx];
     if(!bid||bid<=(aucD?.high||0)){toast(i18n('bidHigher'));return}
     const avail = Number.isFinite(p?.money) ? p.money : (parseInt(p?.money) || 0); if(bid>avail){toast(i18n('notEnoughMoney'));return}
+    // FIX: In online multiplayer, use Firebase transaction for atomic bidding
+    if(!offline&&db&&roomCode){
+      db.ref(fbp(roomCode)+'/auc').transaction(auc=>{
+        if(!auc||auc.resolved)return auc;
+        if(bid>auc.highBid){
+          auc.highBid=bid;auc.highBidder=bidderIdx;
+          auc.highBidderName=p.name;
+          if(!auc.bidLog)auc.bidLog=[];
+          auc.bidLog.push({name:p.name,amount:bid,ts:Date.now()});
+        }
+        return auc;
+      }).then(result=>{
+        if(result.committed){
+          $('oainp').value='';
+          toast(`${p.name} ${i18n('placeBid')} ${fmt(bid)}!`);
+        }else{toast(i18n('bidHigher'));}
+      });
+      return;
+    }
     aucD.high=bid;aucD.winner=bidderIdx;
     $('oahi').textContent=fmt(bid);$('oaldr').textContent=p.name;
     const r=document.createElement('div');r.className='bidrow top';r.textContent=`${p.name}: ${fmt(bid)}`;
     $('oalog').prepend(r);$('oainp').value='';toast(`${p.name} ${i18n('placeBid')} ${fmt(bid)}!`);
+  },
+
+  // FIX: Online auction resolution — called by the auction starter's client
+  _rAucOnline(auc){
+    if(!auc||auc.resolved)return;
+    // Mark as resolved in Firebase first to prevent duplicate resolution
+    db.ref(fbp(roomCode)+'/auc/resolved').set(true).then(()=>{
+      if(Rm._aucCountdown){clearInterval(Rm._aucCountdown);Rm._aucCountdown=null;}
+      closeOv('o-auc');
+      this._busy=false;
+      if(auc.highBidder>=0){
+        const w=GS.pls[auc.highBidder];
+        if(w&&!w.bust&&w.money>=auc.highBid){
+          w.money-=auc.highBid;
+          GS.props[auc.pos]={owner:auc.highBidder,houses:0,hotel:false,mortgaged:false};
+          setLog(`🔨 ${w.name} ${i18n('auctionWon')} ${cellName(BOARD[auc.pos])} (${fmt(auc.highBid)})!`,true);
+          toast(`🔨 ${w.name} ${i18n('auctionWon')}!`);
+          Board.dots();updHUD();updStrip();
+        }else{
+          setLog(`${i18n('auctionNoBids')} ${cellName(BOARD[auc.pos])}`);
+        }
+      }else{
+        setLog(`${i18n('auctionNoBids')} ${cellName(BOARD[auc.pos])}`);
+      }
+      aucD=null;
+      this._push();
+      // Remove auction node from Firebase after small delay
+      setTimeout(()=>{
+        if(db&&roomCode)db.ref(fbp(roomCode)+'/auc').remove();
+      },500);
+      if(GS.pls?.[GS.cur]?.isBot){setTimeout(()=>Bot.go(),600);}else{setTimeout(()=>this.sync(),350);}
+    });
   },
 
   _rAuc(pos){
@@ -15399,6 +15606,7 @@ const G={
     if(this._idleTmr){clearTimeout(this._idleTmr);this._idleTmr=null;}
     closeOv('o-prop');closeOv('o-jgo');closeOv('o-rent');closeOv('o-tax');closeOv('o-loan');closeOv('o-loanpay');closeOv('o-loanreq');
     GS.rolled=false;GS.dc=0;// Reset double counter at end of turn (new turn starts fresh)
+    GS._turnStartTs=Date.now(); // FIX: Track when this turn started for cross-client timeout
     this._busy=false;this._pendingCardLand=false;this._cardLandedGO=false;
     let nxt=(GS.cur+1)%GS.pls.length;let g=0;
     while(GS.pls[nxt].bust&&++g<GS.pls.length)nxt=(nxt+1)%GS.pls.length;
