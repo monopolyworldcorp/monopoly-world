@@ -1640,13 +1640,12 @@ select.inp{
 
 /* ── Back button ── */
 .back{
-  margin-top:env(safe-area-inset-top, 0px);
   background:none;border:none;
   color:rgba(138,151,170,.5);
   font-family:'DM Sans',sans-serif;font-size:11px;font-weight:400;
   letter-spacing:.3px;cursor:pointer;
   align-self:flex-start;
-  padding:40px 0 4px;
+  padding:18px 0 4px;
   max-width:360px;width:100%;text-align:left;
   transition:color .22s;
   display:flex;align-items:center;gap:7px;
@@ -10815,7 +10814,7 @@ function goRoom(){
 }
 
 // ═══ CREATE ROOM HELPERS ═══
-let _crMode='casual', _crLocked=false, _crReqMode='any';
+let _crMode='casual', _crLocked=false;
 function openCreateRoom(){
   if(!currentUser){toast('⚠️ Sign in required to create a room!');openProfilePopup();return;}
   _crMode='casual';_crLocked=false;_crReqMode='any';
