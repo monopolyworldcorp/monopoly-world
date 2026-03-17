@@ -5867,7 +5867,8 @@ function authInit(){
     if(!db) db=firebase.database();
     firebase.auth().onAuthStateChanged(user=>{
       currentUser=user;
-      if(user){ _onAuthSuccess(user); setTimeout(checkInvites, 1500); }
+      if(user){ _onAuthSuccess(user); setTimeout(checkInvites, 1500); setTimeout(startFriendRequestListener, 2000); }
+      else { if(typeof stopFriendRequestListener==='function')stopFriendRequestListener(); }
       refreshProfileUI();
     });
   }catch(e){console.warn('Auth init:',e);}
@@ -6491,43 +6492,95 @@ function searchFriends(){
   const input=document.getElementById('fr-search-input');
   const list=document.getElementById('fr-search-results');
   if(!input||!list||!db)return;
+  if(!currentUser){toast('Sign in to search players');return;}
   const q=input.value.trim().toLowerCase();
-  if(q.length<3){toast('Enter at least 3 characters');return;}
+  if(q.length<2){toast('Enter at least 2 characters');return;}
   list.innerHTML='<div class="fr-empty">Searching...</div>';
+  const prof=loadProfile();
+  // Helper: render one search result card
+  function _renderResult(uid,f,displayQ){
+    const isFriend=(prof.friends||[]).includes(uid);
+    const isPending=(prof.sentRequests||[]).includes(uid);
+    let actionHtml;
+    if(isFriend) actionHtml=`<span style="color:#4ade80;font-size:11px">✓ Friends</span>`;
+    else if(isPending) actionHtml=`<span style="color:#f59e0b;font-size:11px">⏳ Pending</span>`;
+    else actionHtml=`<button class="fr-btn fr-btn-add" onclick="sendFriendRequest('${uid}')">➕ Add</button>`;
+    return `<div class="fr-item">
+      <img class="fr-item-av" src="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 40 40%22><text x=%2250%%22 y=%2256%%22 dominant-baseline=%22middle%22 text-anchor=%22middle%22 font-size=%2220%22>👤</text></svg>">
+      <div class="fr-item-info">
+        <div class="fr-item-name">${(f.fullName||f.name||'Player').replace(/</g,'&lt;')}</div>
+        <div class="fr-item-user">@${(f.username||displayQ).replace(/</g,'&lt;')}</div>
+        <div class="fr-item-status">⭐ ${f.rating||0} · 🎮 ${f.games||0} games</div>
+      </div>
+      <div class="fr-item-actions">${actionHtml}</div>
+    </div>`;
+  }
+  // First try exact username match
   db.ref('usernames/'+q).once('value').then(snap=>{
-    if(!snap.exists()){list.innerHTML='<div class="fr-empty">No player found with @'+q+'</div>';return;}
-    const uid=snap.val();
-    if(uid===currentUser.uid){list.innerHTML='<div class="fr-empty">That&apos;s you! 😄</div>';return;}
-    db.ref('users/'+uid).once('value').then(s=>{
-      const f=s.val()||{};
-      const prof=loadProfile();
-      const isFriend=(prof.friends||[]).includes(uid);
-      list.innerHTML=`<div class="fr-item">
-        <img class="fr-item-av" src="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 40 40%22><text x=%2250%%22 y=%2256%%22 dominant-baseline=%22middle%22 text-anchor=%22middle%22 font-size=%2220%22>👤</text></svg>">
-        <div class="fr-item-info">
-          <div class="fr-item-name">${f.fullName||f.name||'Player'}</div>
-          <div class="fr-item-user">@${f.username||q}</div>
-          <div class="fr-item-status">⭐ ${f.rating||0} · 🎮 ${f.games||0} games</div>
-        </div>
-        <div class="fr-item-actions">
-          ${isFriend?`<span style="color:#4ade80;font-size:11px">✓ Friends</span>`:`<button class="fr-btn fr-btn-add" onclick="sendFriendRequest('${uid}')">➕ Add</button>`}
-        </div>
-      </div>`;
-    });
+    if(snap.exists()){
+      const uid=snap.val();
+      if(uid===currentUser.uid){list.innerHTML='<div class="fr-empty">That\'s you! 😄</div>';return;}
+      db.ref('users/'+uid).once('value').then(s=>{
+        list.innerHTML=_renderResult(uid,s.val()||{},q);
+      });
+    } else {
+      // Fallback: prefix search across all usernames starting with query
+      db.ref('usernames').orderByKey().startAt(q).endAt(q+'\uf8ff').limitToFirst(6).once('value').then(prefSnap=>{
+        const results=[];
+        prefSnap.forEach(child=>{
+          const uid=child.val();
+          if(uid&&uid!==currentUser.uid) results.push({key:child.key,uid});
+        });
+        if(!results.length){
+          list.innerHTML='<div class="fr-empty">No player found matching "'+q.replace(/</g,'&lt;')+'"<br><small style="color:var(--txt3)">Make sure to enter the exact @username</small></div>';
+          return;
+        }
+        Promise.all(results.map(r=>db.ref('users/'+r.uid).once('value').then(s=>({uid:r.uid,key:r.key,...(s.val()||{})})))).then(players=>{
+          list.innerHTML=players.map(f=>_renderResult(f.uid,f,f.username||f.key)).join('');
+        });
+      });
+    }
   });
+}
+
+// Real-time listener for incoming friend requests — so users see badge immediately
+let _frReqListener=null;
+function startFriendRequestListener(){
+  if(!db||!currentUser||_frReqListener)return;
+  _frReqListener=db.ref('friendRequests/'+currentUser.uid);
+  _frReqListener.on('value',snap=>{
+    const reqs=snap.val()||{};
+    const count=Object.keys(reqs).length;
+    // Update request count badge in friend panel
+    const cnt=document.getElementById('fr-req-count');
+    if(cnt)cnt.textContent=count>0?'('+count+')':'';
+  });
+}
+function stopFriendRequestListener(){
+  if(_frReqListener){_frReqListener.off();_frReqListener=null;}
 }
 
 function sendFriendRequest(targetUid){
   if(!db||!currentUser)return;
+  const prof=loadProfile();
+  // Prevent duplicate requests
+  if((prof.sentRequests||[]).includes(targetUid)){toast('⏳ Request already sent!');return;}
+  if((prof.friends||[]).includes(targetUid)){toast('✓ Already friends!');return;}
   db.ref('friendRequests/'+targetUid+'/'+currentUser.uid).set({
     from:currentUser.uid,
+    fromName:prof.fullName||prof.name||'Player',
     timestamp:Date.now()
   }).then(()=>{
     toast('✅ Friend request sent!');
-    const prof=loadProfile();
     if(!prof.sentRequests)prof.sentRequests=[];
     if(!prof.sentRequests.includes(targetUid))prof.sentRequests.push(targetUid);
     _saveProfileObj(prof);
+    // Immediately update button to show "Pending" in search results
+    const list=document.getElementById('fr-search-results');
+    if(list){
+      const addBtn=list.querySelector(`.fr-btn-add[onclick*="${targetUid}"]`);
+      if(addBtn)addBtn.outerHTML=`<span style="color:#f59e0b;font-size:11px">⏳ Pending</span>`;
+    }
   }).catch(()=>toast('❌ Failed to send request'));
 }
 
@@ -6540,15 +6593,16 @@ function acceptFriend(fromUid){
   if(!prof.friends.includes(fromUid))prof.friends.push(fromUid);
   _saveProfileObj(prof);
   syncProfileToCloud(prof);
-  // Add me to their friends list too
-  db.ref('users/'+fromUid+'/friends').once('value').then(snap=>{
-    const theirFriends=snap.val()||[];
-    if(!theirFriends.includes(myUid)){
-      theirFriends.push(myUid);
-      db.ref('users/'+fromUid+'/friends').set(theirFriends);
-    }
+  // Add me to their friends list AND clean up their sentRequests
+  db.ref('users/'+fromUid).once('value').then(snap=>{
+    const theirData=snap.val()||{};
+    const theirFriends=Array.isArray(theirData.friends)?theirData.friends:[];
+    const theirSent=Array.isArray(theirData.sentRequests)?(theirData.sentRequests.filter(u=>u!==myUid)):[];
+    const updates={sentRequests:theirSent};
+    if(!theirFriends.includes(myUid)){updates.friends=[...theirFriends,myUid];}
+    db.ref('users/'+fromUid).update(updates).catch(e=>console.warn('Friend accept sync:',e));
   });
-  // Remove the request
+  // Remove the request from my inbox
   db.ref('friendRequests/'+myUid+'/'+fromUid).remove();
   toast('✅ Friend added!');
   refreshFriendRequests();
@@ -11275,7 +11329,11 @@ const Rm={
       const kickHtml=(!p.isHost&&!p.isBot&&isHost)?`<button class="kick-btn" onclick="Rm.kickPlayer('${p.id}')">✕ Kick</button>`:'';
       // Remove bot button
       const removeBotHtml=(p.isBot&&isHost&&offline)?`<button class="kick-btn" onclick="Rm.removeBot('${p.id}')">✕ Remove</button>`:'';
-      r.innerHTML=`${tokenHtml}<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:700">${p.name}${p.isHost?' 👑':''}${p.isBot?' 🤖':''}</div><div style="font-size:10px;color:var(--txt3)">${ch?ch.full:'No token selected'}</div></div>${readyHtml}${kickHtml}${removeBotHtml}`;
+      const slotNum=localP.indexOf(p)+1;
+      const slotLabel=slotNum===1
+        ?`<span style="font-size:9px;color:var(--gold2);font-weight:700">🥇 Slot 1 · Goes First</span>`
+        :`<span style="font-size:9px;color:var(--txt3)">Slot ${slotNum}</span>`;
+      r.innerHTML=`${tokenHtml}<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:700">${p.name}${p.isHost?' 👑':''}${p.isBot?' 🤖':''}</div><div style="font-size:10px;color:var(--txt3)">${ch?ch.full:'No token selected'}</div><div style="margin-top:2px">${slotLabel}</div></div>${readyHtml}${kickHtml}${removeBotHtml}`;
       c.appendChild(r);
     });
     // Render empty slots
@@ -11355,7 +11413,15 @@ const Rm={
       return;
     }
     maxP=d.maxPlayers||4;
-    localP=Object.values(d.players||{});
+    // FIX: Object.values() order is non-deterministic in Firebase. Sort consistently:
+    // host first (slot 1), then other players by join timestamp embedded in their id.
+    localP=Object.values(d.players||{}).sort((a,b)=>{
+      if(a.isHost&&!b.isHost)return -1;
+      if(!a.isHost&&b.isHost)return 1;
+      const ta=parseInt((a.id||'').replace(/[^0-9]/g,''))||0;
+      const tb=parseInt((b.id||'').replace(/[^0-9]/g,''))||0;
+      return ta-tb;
+    });
     this._render();
     // Handle countdown from host
     if(d.countdown&&d.countdown.active&&!isHost){
@@ -11367,13 +11433,37 @@ const Rm={
     if(d.status==='char_select')CharSel.start(localP);
     if(d.status==='playing'&&d.gs){
       this._cancelCountdown();
+      // FIX: Only transition to game screen once. After that, just update GS + sync.
+      // Previously this showed ThemedLoader on EVERY Firebase GS push (every move).
+      const alreadyInGame=document.getElementById('sg')?.classList.contains('act');
       GS=d.gs;myIdx=GS.pls.findIndex(p=>p.id===myId);
-      ThemedLoader.show(currentTheme, () => {
-        goScr('sg');
-        requestAnimationFrame(()=>{setTimeout(()=>{Board.draw();Board.tokens();Board.dots();updHUD();updStrip();G.sync();refreshInGameLeaderboard();},80);});
-      });
+      if(!alreadyInGame){
+        // First transition — show themed loader
+        ThemedLoader.show(currentTheme, () => {
+          goScr('sg');
+          requestAnimationFrame(()=>{setTimeout(()=>{Board.draw();Board.tokens();Board.dots();updHUD();updStrip();G.sync();refreshInGameLeaderboard();},80);});
+        });
+      } else {
+        // Already in game — silently update state from Firebase push
+        requestAnimationFrame(()=>{setTimeout(()=>{Board.draw();Board.tokens();Board.dots();updHUD();updStrip();G.sync();},80);});
+      }
     }
-    if(d.tradeOff&&d.tradeOff.to===myId&&!d.tradeOff.resolved)Tr.incoming(d.tradeOff);
+    // FIX: trade offer stores player INDEX (number), not myId (string). Must compare myIdx (number).
+    if(d.tradeOff&&d.tradeOff.to===myIdx&&myIdx>=0&&!d.tradeOff.resolved)Tr.incoming(d.tradeOff);
+    // FIX: Player-to-player loan request — show dialog to the target player online
+    if(d.loanReq&&d.loanReq.to===myIdx&&myIdx>=0&&!d.loanReq.resolved){
+      G._pendingLoanReq=d.loanReq;
+      const borrower=GS.pls?.[d.loanReq.from];
+      const amt=d.loanReq.amount||0;
+      if(borrower&&amt>0){
+        const infoHtml=`<b>${i18n('loanYouGet')||'You will receive'}:</b> ${fmt(amt)}+${fmt(Math.floor(amt*0.20))} (principal + 20% interest)<br><small style="color:var(--txt3)">(Bank will automatically pay you back after 2 laps — no risk!)</small>`;
+        const t=$('loanreq-title'),desc=$('loanreq-desc'),info=$('loanreq-info');
+        if(t)t.textContent=`${borrower.name} ${i18n('loanWantsBorrow')||'wants to borrow'}`;
+        if(desc)desc.textContent=`${fmt(amt)} — ${i18n('loanWillPay')||'will pay back'} ${fmt(amt+Math.floor(amt*0.10))}`;
+        if(info)info.innerHTML=infoHtml;
+        openOv('o-loanreq');
+      }
+    }
   },
   _showCountdownRemote(val){
     const ov=document.getElementById('countdown-overlay');
@@ -11662,9 +11752,19 @@ function mkGS(players){
   const cd=shuf(CHANCE.map(c=>c.id)),dd=shuf(COMM.map(c=>c.id));
   const startM=getModeStartMoney();
   const mult=getModeMult();
-  const pls=players.map((p,i)=>{
+  // FIX: Turn order is based on slot position in the game room lobby.
+  // Host (slot 1) always goes first. Other players go in join order (timestamp in id).
+  // This guarantees deterministic turn order across all clients.
+  const sorted=[...players].sort((a,b)=>{
+    if(a.isHost&&!b.isHost)return -1;
+    if(!a.isHost&&b.isHost)return 1;
+    const ta=parseInt((a.id||'').replace(/[^0-9]/g,''))||0;
+    const tb=parseInt((b.id||'').replace(/[^0-9]/g,''))||0;
+    return ta-tb;
+  });
+  const pls=sorted.map((p,i)=>{
     const ch=CHARS.find(c=>c.id===p.charId)||CHARS[i%6];
-    return{id:p.id,name:p.name,isBot:p.isBot,charId:ch.id,color:ch.color,money:startM,pos:0,inJail:false,jt:0,jfc:0,bust:false,uid:p.uid||null,laps:0};
+    return{id:p.id,name:p.name,isBot:p.isBot,charId:ch.id,color:ch.color,money:startM,pos:0,inJail:false,jt:0,jfc:0,bust:false,uid:p.uid||null,laps:0,slotIndex:i};
   });
   return{pls,cur:0,props:{},fp:0,ci:0,di:0,cd,dd,rolled:false,dice:[1,1],dc:0,loans:[],loanIdCounter:0,gameMode:gameMode,mult:mult};
 }
