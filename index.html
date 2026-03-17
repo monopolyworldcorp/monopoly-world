@@ -11034,7 +11034,7 @@ const Rm={
       setECoinBalance(bal - mc.entryFee);
       toast('💰 Entry fee Ⓔ'+mc.entryFee.toLocaleString()+' deducted');
     }
-    if(!fbInit()){openOv('o-fb');return}
+    if(!fbInit()){alert('Firebase init gagal! Cek config.');openOv('o-fb');return}
     try{
       // Track entry fee payments for refund on cancel
       localP[0].entryPaid=mc.entryFee;
@@ -11049,7 +11049,7 @@ const Rm={
       await fbSet(roomCode,roomData);
       fbListen(roomCode,d=>this._upd(d));
       db.ref(`${fbp(roomCode)}/players/${myId}`).onDisconnect().remove();
-    }catch(e){openOv('o-fb');return}
+    }catch(e){alert('Create Room error: '+(e.message||e));openOv('o-fb');return}
     closeOv('o-create-room');
     this._render();this._renderLobbyInfo();goScr('sw');
     const lcp=document.getElementById('lobby-chat-panel');if(lcp)lcp.style.display='block';
@@ -19407,5 +19407,6 @@ console.log('%c🔊 Audio System v35 loaded', 'background:#c8952a;color:#fff;pad
   </div>
 </div>
 
+<script>window.addEventListener("error",function(e){alert("JS Error: "+e.message+" Line: "+e.lineno)});window.addEventListener("unhandledrejection",function(e){alert("Async Error: "+(e.reason&&e.reason.message||e.reason))});</script>
 </body>
 </html>
