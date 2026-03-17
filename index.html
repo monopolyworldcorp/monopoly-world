@@ -11581,7 +11581,7 @@ const Rm={
     if(!d){
       if(!isHost){
         const closeMc=MODE_CONFIG[gameMode||'casual']||MODE_CONFIG.casual;
-        const _inActiveGame2=document.getElementById('sg')?.classList.contains('act');
+        const _inActiveGame2=!document.getElementById('sg')?.classList.contains('out');
         if(_inActiveGame2){
           // FIX: During an active game, brief host disconnect should NOT immediately end the session.
           // Give a 5-second grace period. If the room is still gone, THEN exit.
@@ -11619,7 +11619,7 @@ const Rm={
     }
     // Check if we were kicked — skip this check during an active game
     // (brief disconnects can remove player from d.players mid-game)
-    const _activeGameRunning = d.status==='playing' && document.getElementById('sg')?.classList.contains('act');
+    const _activeGameRunning = d.status==='playing' && !document.getElementById('sg')?.classList.contains('out');
     // FIX: If HOST player entry disappeared (brief disconnect/onDisconnect fired), re-add it
     if(isHost&&myId&&d&&d.status==='waiting'&&db&&roomCode){
       if(!d.players||!d.players[myId]){
@@ -11659,7 +11659,7 @@ const Rm={
       return ta-tb;
     });
     // FIX: Skip lobby render during active gameplay (performance optimization)
-    const _inGame=document.getElementById('sg')?.classList.contains('act');
+    const _inGame=!document.getElementById('sg')?.classList.contains('out');
     // FIX: Auto-delete room from Firebase when all human players have left
     if(d && (d.status==='waiting' || d.status==='playing')) {
       const humanPlayers=Object.values(d.players||{}).filter(p=>!p.isBot);
@@ -11681,7 +11681,7 @@ const Rm={
       this._cancelCountdown();
       // FIX: Only transition to game screen once. After that, just update GS + sync.
       // Previously this showed ThemedLoader on EVERY Firebase GS push (every move).
-      const alreadyInGame=document.getElementById('sg')?.classList.contains('act');
+      const alreadyInGame=!document.getElementById('sg')?.classList.contains('out');
       // CRITICAL FIX: Sync theme from room data before loading GS
       // Ensures all players use identical BOARD data (same prices, rents, names)
       if(d.theme&&d.theme!==currentTheme){
