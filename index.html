@@ -1384,6 +1384,7 @@ width:100%;
 }
 .lb-row:hover{background:rgba(200,149,42,.06);border-color:rgba(200,149,42,.12)}
 .lb-row.me{background:rgba(200,149,42,.08);border-color:rgba(200,149,42,.2)}
+.lb-row:hover:not(.me){background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.12);transition:background .15s,border-color .15s}
 .lb-rank{
   width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;
   font-family:'Bebas Neue',sans-serif;font-size:13px;font-weight:700;flex-shrink:0;
@@ -6112,6 +6113,10 @@ function renderLeaderboard(){
   const topGames = [..._lbCache].sort((a,b) => (b.games||0)-(a.games||0))[0];
   const topECoins = [..._lbCache].sort((a,b) => (b.eCoins||0)-(a.eCoins||0))[0];
 
+  // FIX: Store player data keyed by uid for popup access
+  window._lbPlayerMap = window._lbPlayerMap || {};
+  sorted.slice(0, 25).forEach(p => { window._lbPlayerMap[p.uid] = p; });
+
   list.innerHTML = sorted.slice(0, 25).map((p, i) => {
     const rank = i + 1;
     const rankClass = rank === 1 ? 'gold' : rank === 2 ? 'silver' : rank === 3 ? 'bronze' : '';
@@ -6135,7 +6140,7 @@ function renderLeaderboard(){
     const avatarEmoji = p.avatarEmoji || '👤';
     const avatarSrc = p.avatarData ? `src="${p.avatarData}"` : `src="" onerror="this.style.display='none'"`;
 
-    return `<div class="lb-row${isMe ? ' me' : ''}">
+    return `<div class="lb-row${isMe ? ' me' : ''}" style="cursor:pointer" onclick="openLeaderboardPlayerPopup('${p.uid}')">
       <div class="lb-rank ${rankClass}">${rankIcon}</div>
       <div style="width:30px;height:30px;border-radius:50%;border:1.5px solid rgba(200,149,42,.2);display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.3);font-size:16px;flex-shrink:0">${p.avatarData ? '<img '+avatarSrc+' style="width:100%;height:100%;border-radius:50%;object-fit:cover">' : avatarEmoji}</div>
       <div class="lb-info">
@@ -14280,6 +14285,105 @@ function _countMonopolies(pi){
 
 function closePlayerPopup(){
   $('pp-overlay').classList.remove('active');
+  // Clean up username tag added by cloud load
+  const ex=document.getElementById('pp-username-cloud');
+  if(ex)ex.remove();
+}
+
+// ─── Open player popup from global leaderboard (no GS.pls needed) ───
+function openLeaderboardPlayerPopup(uid){
+  if(!uid)return;
+  const p=window._lbPlayerMap?.[uid];
+  // Reset popup fields
+  $('pp-name').textContent=p?.name||'Player';
+  $('pp-badge').textContent='⭐ Global Player';
+  $('pp-bio').textContent='Loading...';
+  $('pp-games').textContent=p?.games||0;
+  $('pp-wins').textContent=p?.wins||0;
+  const g=p?.games||0,w=p?.wins||0;
+  $('pp-rate').textContent=g>0?Math.round((w/g)*100)+'%':'0%';
+  $('pp-earn').textContent=(p?.rating||0)+' pts';
+  // Avatar
+  const avEl=$('pp-avatar');
+  if(avEl){
+    if(p?.avatarData){
+      avEl.src=p.avatarData;avEl.style.borderRadius='50%';avEl.style.objectFit='cover';
+      avEl.style.width='80px';avEl.style.height='80px';
+    } else {
+      avEl.src='';avEl.style.width='80px';avEl.style.height='80px';
+      // Emoji fallback
+      avEl.alt=p?.avatarEmoji||'👤';
+    }
+  }
+  // Friend actions
+  const myUid2=currentUser?currentUser.uid:null;
+  ppTargetUid=(uid&&uid!==myUid2)?uid:null;
+  const fa=document.getElementById('pp-friend-actions');
+  if(fa){
+    fa.style.display=ppTargetUid?'flex':'none';
+    if(ppTargetUid){
+      const prof=loadProfile();
+      const isFriend=(prof.friends||[]).includes(ppTargetUid);
+      const addBtn=document.getElementById('pp-add-friend');
+      if(addBtn){
+        if(isFriend){addBtn.textContent='✓ Friends';addBtn.disabled=true;addBtn.style.opacity='.5';}
+        else{addBtn.textContent='➕ Add Friend';addBtn.disabled=false;addBtn.style.opacity='1';}
+      }
+    }
+  }
+  // Show the popup
+  const ex=document.getElementById('pp-username-cloud');if(ex)ex.remove();
+  $('pp-overlay').classList.add('active');
+  // Load full profile from Firebase
+  if(db&&uid){
+    loadProfileFromCloud(uid).then(cloudProf=>{
+      if(!cloudProf)return;
+      $('pp-name').textContent=cloudProf.fullName||cloudProf.name||p?.name||'Player';
+      // Username tag
+      if(cloudProf.username){
+        const ppNameEl=$('pp-name');
+        const ex2=document.getElementById('pp-username-cloud');if(ex2)ex2.remove();
+        if(ppNameEl)ppNameEl.insertAdjacentHTML('afterend',
+          '<div id="pp-username-cloud" style="font-size:10px;color:var(--txt3);margin-top:2px">@'+cloudProf.username+'</div>');
+      }
+      // Avatar from cloud
+      if(cloudProf.avatarType==='upload'&&cloudProf.avatarData&&avEl){
+        avEl.src=cloudProf.avatarData;avEl.style.width='80px';avEl.style.height='80px';
+        avEl.style.borderRadius='50%';avEl.style.objectFit='cover';
+      } else if(cloudProf.avatarId&&avEl){
+        const av=BUILT_IN_AVATARS.find(a=>a.id===cloudProf.avatarId);
+        if(av)_emojiToDataURL(av.emoji,80,url=>{avEl.src=url;avEl.style.width='80px';avEl.style.height='80px';avEl.style.borderRadius='50%';});
+      }
+      // Bio & stats from cloud
+      if(cloudProf.bio)$('pp-bio').textContent=cloudProf.bio;
+      else $('pp-bio').textContent='No bio yet.';
+      $('pp-games').textContent=cloudProf.games||0;
+      $('pp-wins').textContent=cloudProf.wins||0;
+      const cg=cloudProf.games||0,cw=cloudProf.wins||0;
+      $('pp-rate').textContent=cg>0?Math.round((cw/cg)*100)+'%':'0%';
+      $('pp-earn').textContent=(cloudProf.rating||0)+' pts';
+      // Badge
+      const rating=cloudProf.rating||0;
+      let badge='🌟 Player';
+      if(rating>=500)badge='👑 Legend';
+      else if(rating>=200)badge='🏆 Champion';
+      else if(rating>=100)badge='💎 Diamond';
+      else if(rating>=50)badge='⭐ Gold';
+      $('pp-badge').textContent=badge;
+      // Update add-friend button based on Firebase
+      if(ppTargetUid&&db){
+        db.ref('users/'+myUid2+'/friends').once('value').then(fs=>{
+          const fbFriends=fs.val()||[];
+          const isFriend2=fbFriends.includes(ppTargetUid);
+          const addBtn2=document.getElementById('pp-add-friend');
+          if(addBtn2){
+            if(isFriend2){addBtn2.textContent='✓ Friends';addBtn2.disabled=true;addBtn2.style.opacity='.5';}
+            else{addBtn2.textContent='➕ Add Friend';addBtn2.disabled=false;addBtn2.style.opacity='1';}
+          }
+        });
+      }
+    }).catch(()=>{$('pp-bio').textContent='Could not load profile.';});
+  }
 }
 
 // ════════════════════════════════════════════
