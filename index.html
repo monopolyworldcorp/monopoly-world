@@ -11084,18 +11084,18 @@ const RoomBrowser={
   start(){
     if(!fbInit())return;
     this.refresh();
-    // Listen for room changes
-    if(this._ref)this._ref.off();
+    // Listen for ALL room changes, filter locally — no server-side index needed
     if(this._ref)try{this._ref.off();}catch(e){}
-    this._ref=db.ref('rooms').orderByChild('status').equalTo('waiting');
+    this._ref=db.ref('rooms');
     this._ref.on('value',snap=>{
-      this._rooms=snap.val()||{};
-      // Clean up ghost rooms in realtime listener too
-      Object.entries(this._rooms).forEach(([code,room])=>{
-        if(room&&(!room.players||Object.keys(room.players).length===0)&&room.status==='waiting'){
-          db.ref('rooms/'+code).remove().catch(()=>{});
-          delete this._rooms[code];
-        }
+      const allRooms=snap.val()||{};
+      this._rooms={};
+      Object.entries(allRooms).forEach(([code,room])=>{
+        if(!room||room.status!=='waiting')return;
+        // Auto-delete ghost rooms (waiting but 0 real players)
+        const pc=Object.keys(room.players||{}).length;
+        if(pc===0){db.ref('rooms/'+code).remove().catch(()=>{});return;}
+        this._rooms[code]=room;
       });
       this._renderList();
     },err=>{console.warn('RoomBrowser error:',err);this._renderList();});
@@ -11104,17 +11104,15 @@ const RoomBrowser={
     if(this._ref){this._ref.off();this._ref=null;}
   },
   refresh(){
-    if(!db||!fbInit()){
-      this._renderList();return;
-    }
-    db.ref('rooms').orderByChild('status').equalTo('waiting').once('value',snap=>{
-      this._rooms=snap.val()||{};
-      // Clean up ghost rooms: status=waiting but no players (host disconnected, room not cleaned up)
-      Object.entries(this._rooms).forEach(([code,room])=>{
-        if(!room.players||Object.keys(room.players).length===0){
-          db.ref('rooms/'+code).remove().catch(()=>{});
-          delete this._rooms[code];
-        }
+    if(!db||!fbInit()){this._renderList();return;}
+    db.ref('rooms').once('value',snap=>{
+      const allRooms=snap.val()||{};
+      this._rooms={};
+      Object.entries(allRooms).forEach(([code,room])=>{
+        if(!room||room.status!=='waiting')return;
+        const pc=Object.keys(room.players||{}).length;
+        if(pc===0){db.ref('rooms/'+code).remove().catch(()=>{});return;}
+        this._rooms[code]=room;
       });
       this._renderList();
     });
@@ -11319,18 +11317,25 @@ const Rm={
     const uid=currentUser.uid;
     const me={id:myId,name:nm,isHost:false,isBot:false,charId:null,uid:uid,ready:false,entryPaid:mc.entryFee};
     // FIX: Use Firebase transaction to atomically check capacity and join
-    const joinResult=await db.ref(fbp(code)+'/players').transaction(players=>{
-      if(players===null)players={};
-      if(Object.keys(players).length>=(d.maxPlayers||4))return; // abort: room full
-      // Double-check UID not already present
-      if(Object.values(players).some(p=>p.uid===uid))return; // abort: already in room
-      players[myId]=me;
-      return players;
-    });
+    let joinResult;
+    try{
+      joinResult=await db.ref(fbp(code)+'/players').transaction(players=>{
+        if(players===null)players={};
+        if(Object.keys(players).length>=(d.maxPlayers||4))return; // abort: room full
+        // Double-check UID not already present
+        if(Object.values(players).some(p=>p.uid===uid))return; // abort: already in room
+        players[myId]=me;
+        return players;
+      });
+    }catch(txErr){
+      if(mc.entryFee>0){const curBal=getECoinBalance();setECoinBalance(curBal+mc.entryFee);}
+      toast('❌ Gagal bergabung ke room. Periksa koneksi internet kamu.');
+      roomCode='';myId='';isHost=false;return;
+    }
     if(!joinResult.committed){
       // Transaction aborted — refund entry fee if paid
       if(mc.entryFee>0){const curBal=getECoinBalance();setECoinBalance(curBal+mc.entryFee);}
-      toast(i18n('roomFull')||'Room is full or you are already in it!');roomCode='';myId='';return;
+      toast(i18n('roomFull')||'Room penuh atau kamu sudah ada di room ini!');roomCode='';myId='';return;
     }
     db.ref(`${fbp(code)}/players/${myId}`).onDisconnect().remove();
     fbListen(code,d2=>this._upd(d2));
@@ -11553,15 +11558,15 @@ const Rm={
         else{rb.style.background='';rb.style.color='';rb.style.border='';}
       }
     }
-    // Start button: ALL slots must be filled AND all players ready
-    const allFilled=localP.length===maxP;
+    // Start button: need at least 2 players (human+bot), all must be ready
+    const enoughPlayers=localP.length>=2;
     const allReady=localP.every(p=>p.ready);
-    $('wstart').disabled=!(isHost&&allFilled&&allReady);
+    $('wstart').disabled=!(isHost&&enoughPlayers&&allReady);
     // Show Exit button for online, Add Bot for offline only
     const exitBtn=document.getElementById('w-exit-btn');
     const addBotBtn=document.getElementById('w-addbot-btn');
     if(exitBtn)exitBtn.style.display=(!offline)?'inline-flex':'none';
-    if(addBotBtn)addBotBtn.style.display=(offline&&isHost&&localP.length<maxP)?'inline-flex':'none';
+    if(addBotBtn)addBotBtn.style.display=(isHost&&localP.length<maxP)?'inline-flex':'none';
   },
   _upd(d){
     if(!d){
@@ -11885,7 +11890,7 @@ const Rm={
     if(!isHost)return;
     const allFilled=localP.length===maxP;
     const allReady=localP.every(p=>p.ready);
-    if(!allFilled||!allReady){toast('❌ All slots must be filled and ready!');return;}
+    if(localP.length<2||!allReady){toast('❌ Butuh minimal 2 pemain dan semua harus siap (Ready)!');return;}
     // Start 10 second countdown
     this._countdownVal=10;
     if(db&&roomCode)await fbUp(roomCode,{countdown:{active:true,value:10}});
