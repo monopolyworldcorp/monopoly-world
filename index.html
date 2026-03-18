@@ -4162,7 +4162,7 @@ body.popup-active .tok-emoji-ring{opacity:0!important;pointer-events:none!import
 
 <!-- ═══ ROOM BROWSER ═══ -->
 <div class="scr out" id="sr">
-  <button class="back" onclick="_roomBrowserThemeFilter=null;RoomBrowser.stop();var _cb=document.getElementById('sr-create-btn-row');if(_cb)_cb.style.display='flex';goScr('sm')">
+  <button class="back" onclick="_roomBrowserThemeFilter=null;_roomBrowserJoinOnly=false;RoomBrowser.stop();goScr('sm')">
     <span class="back-arrow">←</span>
     <span data-i18n="back">Back</span>
   </button>
@@ -8426,6 +8426,7 @@ const THEME_FLAGS={
 
 var _pendingPlayTheme='nusantara';
 var _roomBrowserThemeFilter=null;
+var _roomBrowserJoinOnly=false;
 var _pendingPlayMode='casual';
 
 function onThemeClick(t){
@@ -8440,7 +8441,6 @@ function onThemeClick(t){
 function showThemePlayOverlay(t){
   var ov=document.getElementById('theme-play-overlay');
   if(!ov)return;
-  // Update title with theme name
   var title=document.getElementById('tp-title');
   if(title) title.textContent=(THEME_FLAGS[t]||'🌏')+' '+(THEME_LABELS[t]||t.toUpperCase());
   // Reset to step 1
@@ -8451,6 +8451,7 @@ function showThemePlayOverlay(t){
   if(stepMode) stepMode.style.display='none';
   if(step2) step2.style.display='none';
   _pendingPlayMode='casual';
+  _roomBrowserJoinOnly=false;
   var sub=document.getElementById('tp-sub');
   if(sub) sub.textContent='Choose how to play';
   // Show overlay
@@ -8581,21 +8582,9 @@ function _updateThemeRoomCount(){
 async function themeCreateRoom(){
   if(typeof SFX!=='undefined'&&SFX.play)SFX.play('click');
   closeThemePlayOverlay();
-  // Wait for auth if not resolved yet (max 6 seconds)
-  if(!_authIsResolved){
-    await Promise.race([waitForAuth(),new Promise(function(r){setTimeout(r,6000)})]);
-  }
-  // Double-check: try to get current user from Firebase
-  if(!currentUser) currentUser=firebase.auth().currentUser;
-  if(!currentUser){
-    // Last resort: check localStorage cache
-    if(localStorage.getItem('_mw_hasAuth')==='1'){
-      toast('⏳ Restoring session...');
-      await new Promise(function(r){setTimeout(r,2000)});
-      currentUser=firebase.auth().currentUser;
-    }
-    if(!currentUser){toast('⚠️ Sign in required to create a room!');openProfilePopup();return;}
-  }
+  // Resolve auth using global helper
+  await ensureAuth();
+  if(!currentUser){toast('⚠️ Sign in required to create a room!');openProfilePopup();return;}
   if(!fbInit()){toast('❌ Server connection failed. Please try again.');return;}
   // Create room directly with the selected theme
   var prof=loadProfile();
@@ -8634,8 +8623,9 @@ async function themeCreateRoom(){
   // Write to Firebase
   fbSet(roomCode,roomData).then(function(){
     fbListen(roomCode,function(d){Rm._upd(d);});
-    db.ref(fbp(roomCode)+'/players/'+myId).onDisconnect().remove();
-    // Room-level: mark host as offline instead of deleting entire room
+    // Host player stays in room on disconnect (only mark offline, don't remove)
+    db.ref(fbp(roomCode)+'/players/'+myId+'/online').set(true);
+    db.ref(fbp(roomCode)+'/players/'+myId+'/online').onDisconnect().set(false);
     db.ref(fbp(roomCode)+'/hostOnline').set(true);
     db.ref(fbp(roomCode)+'/hostOnline').onDisconnect().set(false);
     // Start host heartbeat
@@ -8668,25 +8658,13 @@ async function themeCreateRoom(){
 async function themeJoinRoom(){
   if(typeof SFX!=='undefined'&&SFX.play)SFX.play('click');
   closeThemePlayOverlay();
-  // Wait for auth if not resolved yet (max 6 seconds)
-  if(!_authIsResolved){
-    await Promise.race([waitForAuth(),new Promise(function(r){setTimeout(r,6000)})]);
-  }
-  if(!currentUser) currentUser=firebase.auth().currentUser;
-  if(!currentUser){
-    if(localStorage.getItem('_mw_hasAuth')==='1'){
-      toast('⏳ Restoring session...');
-      await new Promise(function(r){setTimeout(r,2000)});
-      currentUser=firebase.auth().currentUser;
-    }
-    if(!currentUser){toast('⚠️ Sign in required to play online!');openProfilePopup();return;}
-  }
+  await ensureAuth();
+  if(!currentUser){toast('⚠️ Sign in required to play online!');openProfilePopup();return;}
   if(!fbInit()){toast('❌ Server connection failed. Check your internet.');return;}
-  // Set theme filter for room browser
+  // Set filters for room browser — join only, no create
   _roomBrowserThemeFilter=_pendingPlayTheme;
-  // Ensure RoomBrowser is stopped before restarting (prevent listener leaks)
+  _roomBrowserJoinOnly=true;
   RoomBrowser.stop();
-  // Navigate to room browser
   goRoom();
 }
 
@@ -10381,6 +10359,20 @@ function waitForAuth(){
   if(_authIsResolved)return Promise.resolve(currentUser);
   return _authReadyPromise;
 }
+// Global auth resolver - ensures currentUser is set everywhere
+async function ensureAuth(){
+  if(currentUser) return currentUser;
+  if(!_authIsResolved){
+    await Promise.race([waitForAuth(),new Promise(function(r){setTimeout(r,4000)})]);
+  }
+  if(!currentUser) currentUser=firebase.auth().currentUser;
+  if(!currentUser && localStorage.getItem('_mw_hasAuth')==='1'){
+    // Had auth recently, wait a bit more for Firebase to restore
+    await new Promise(function(r){setTimeout(r,2000)});
+    currentUser=firebase.auth().currentUser;
+  }
+  return currentUser;
+}
 // Instant UI restoration from localStorage
 try{
   var _cachedAuth=localStorage.getItem('_mw_hasAuth');
@@ -11423,6 +11415,7 @@ function sleep(ms){return new Promise(r=>setTimeout(r,ms))}
 function chOf(p){return CHARS.find(c=>c.id===p?.charId)||CHARS[0]}
 function clearRoomThemeFilter(){
   _roomBrowserThemeFilter=null;
+  _roomBrowserJoinOnly=false;
   var bar=document.getElementById('room-theme-filter-bar');
   if(bar) bar.style.display='none';
   // Show create button row when filter is cleared
@@ -11440,6 +11433,17 @@ function themeFilterCreateRoom(){
 
 function goRoom(){
   goScr('sr');
+  // Update header based on context
+  var headerTitle=document.querySelector('#sr .scr-header-title');
+  if(headerTitle){
+    if(_roomBrowserJoinOnly && _roomBrowserThemeFilter){
+      var tn=(typeof THEME_LABELS!=='undefined'&&THEME_LABELS[_roomBrowserThemeFilter])||_roomBrowserThemeFilter||'';
+      var mc=MODE_CONFIG[_pendingPlayMode||'casual']||MODE_CONFIG.casual;
+      headerTitle.innerHTML='🔍 Join '+tn+' Room';
+    } else {
+      headerTitle.innerHTML='🌐 Online Rooms';
+    }
+  }
   // Show/hide theme filter bar
   var filterBar=document.getElementById('room-theme-filter-bar');
   if(filterBar){
@@ -11447,26 +11451,30 @@ function goRoom(){
       filterBar.style.display='flex';
       var label=document.getElementById('rtf-label');
       var themeName=(typeof THEME_LABELS!=='undefined'&&THEME_LABELS[_roomBrowserThemeFilter])||_roomBrowserThemeFilter||'';
-      var mc=MODE_CONFIG[_pendingPlayMode||'casual']||MODE_CONFIG.casual;
-      if(label) label.innerHTML='🎯 Showing <strong>'+themeName+'</strong> rooms · '+mc.icon+' '+mc.label;
+      var mc2=MODE_CONFIG[_pendingPlayMode||'casual']||MODE_CONFIG.casual;
+      if(label) label.innerHTML='🎯 <strong>'+themeName+'</strong> · '+mc2.icon+' '+mc2.label;
     } else {
       filterBar.style.display='none';
     }
   }
-  // Show/hide create button based on context
+  // ALWAYS hide ALL create buttons when in join-only mode
   var createBtnRow=document.getElementById('sr-create-btn-row');
   var themeCreateRow=document.getElementById('sr-theme-create-row');
-  if(_roomBrowserThemeFilter){
+  if(_roomBrowserJoinOnly){
     if(createBtnRow) createBtnRow.style.display='none';
-    if(themeCreateRow) themeCreateRow.style.display='flex';
-  } else {
-    if(createBtnRow) createBtnRow.style.display='flex';
     if(themeCreateRow) themeCreateRow.style.display='none';
+  } else {
+    if(_roomBrowserThemeFilter){
+      if(createBtnRow) createBtnRow.style.display='none';
+      if(themeCreateRow) themeCreateRow.style.display='flex';
+    } else {
+      if(createBtnRow) createBtnRow.style.display='flex';
+      if(themeCreateRow) themeCreateRow.style.display='none';
+    }
   }
   // Show login status
   var loginStatus=document.getElementById('room-login-status');
   if(loginStatus){
-    // Always check the actual Firebase auth state AND localStorage cache
     var _u=currentUser||firebase.auth().currentUser;
     var _hasCachedAuth=localStorage.getItem('_mw_hasAuth')==='1';
     if(_u){
@@ -11477,7 +11485,6 @@ function goRoom(){
       loginStatus.innerHTML='✓ Signed in as <strong>'+(loadProfile().name||_u.email)+'</strong>';
       if(!currentUser)currentUser=_u;
     } else if(_hasCachedAuth){
-      // Had auth recently - likely restoring
       var _cachedName=localStorage.getItem('_mw_authName')||'';
       loginStatus.style.display='block';
       loginStatus.style.background='rgba(34,197,94,.08)';
@@ -11492,7 +11499,6 @@ function goRoom(){
       loginStatus.innerHTML='⚠️ Sign in required — <span style="color:var(--gold2);cursor:pointer;text-decoration:underline" onclick="openProfilePopup()">Sign In</span>';
     }
   }
-  // Always stop before restart to prevent listener leaks
   RoomBrowser.stop();
   RoomBrowser.start();
 }
@@ -11500,10 +11506,7 @@ function goRoom(){
 // ═══ CREATE ROOM HELPERS ═══
 let _crMode='casual', _crLocked=false, _crReqMode='any';
 async function openCreateRoom(){
-  if(!_authIsResolved){
-    await Promise.race([waitForAuth(),new Promise(function(r){setTimeout(r,6000)})]);
-  }
-  if(!currentUser) currentUser=firebase.auth().currentUser;
+  await ensureAuth();
   if(!currentUser){toast('⚠️ Sign in required to create a room!');openProfilePopup();return;}
   _crMode=_pendingPlayMode||'casual';_crLocked=false;_crReqMode='any';
   document.querySelectorAll('.mode-card').forEach(c=>c.classList.toggle('selected',c.dataset.mode===_crMode));
@@ -11689,24 +11692,24 @@ const RoomBrowser={
             return;
           }
           if(room.status!=='waiting')return;
-          // Count HUMAN players (non-bot)
+          // Count players
           const players=room.players||{};
           const allKeys=Object.keys(players);
           const humanCount=allKeys.filter(k=>!players[k].isBot).length;
-          // If host is offline AND no humans left, clean up after 90 seconds
-          if(room.hostOnline===false && humanCount===0){
-            if(room.hostHeartbeat && typeof room.hostHeartbeat==='number' && (Date.now()-room.hostHeartbeat>90000)){
-              db.ref('rooms/'+code).remove().catch(()=>{});
-            }
-            return;
-          }
-          // If total players is 0, skip (will be cleaned eventually)
-          if(allKeys.length===0)return;
-          // Stale room check: no heartbeat update for 5 minutes
+          // Stale room check: no heartbeat update for 5 minutes → cleanup
           if(room.hostHeartbeat && typeof room.hostHeartbeat==='number' && (Date.now()-room.hostHeartbeat>300000)){
             db.ref('rooms/'+code).remove().catch(()=>{});
             return;
           }
+          // Room with no players AND host offline for over 2 minutes → cleanup
+          if(allKeys.length===0 && room.hostOnline===false){
+            if(room.hostHeartbeat && typeof room.hostHeartbeat==='number' && (Date.now()-room.hostHeartbeat>120000)){
+              db.ref('rooms/'+code).remove().catch(()=>{});
+            }
+            return;
+          }
+          // Show room as long as it has host info (even if temporarily 0 players)
+          if(allKeys.length===0 && !room.hostName) return;
           this._rooms[code]=room;
         });
         this._renderList();
@@ -11745,17 +11748,19 @@ const RoomBrowser={
           const players=room.players||{};
           const allKeys=Object.keys(players);
           const humanCount=allKeys.filter(k=>!players[k].isBot).length;
-          if(room.hostOnline===false && humanCount===0){
-            if(room.hostHeartbeat && typeof room.hostHeartbeat==='number' && (Date.now()-room.hostHeartbeat>90000)){
-              db.ref('rooms/'+code).remove().catch(()=>{});
-            }
-            return;
-          }
-          if(allKeys.length===0)return;
+          // Stale room: no heartbeat for 5 min → cleanup
           if(room.hostHeartbeat && typeof room.hostHeartbeat==='number' && (Date.now()-room.hostHeartbeat>300000)){
             db.ref('rooms/'+code).remove().catch(()=>{});
             return;
           }
+          // No players + host offline > 2 min → cleanup
+          if(allKeys.length===0 && room.hostOnline===false){
+            if(room.hostHeartbeat && typeof room.hostHeartbeat==='number' && (Date.now()-room.hostHeartbeat>120000)){
+              db.ref('rooms/'+code).remove().catch(()=>{});
+            }
+            return;
+          }
+          if(allKeys.length===0 && !room.hostName) return;
           this._rooms[code]=room;
         });
         this._renderList();
@@ -11772,16 +11777,23 @@ const RoomBrowser={
   },
   _renderList(){
     const el=document.getElementById('room-list');if(!el)return;
-    // Always enforce create button visibility based on theme filter context
+    // Enforce create button visibility
     var _cBtnRow=document.getElementById('sr-create-btn-row');
-    if(_cBtnRow)_cBtnRow.style.display=_roomBrowserThemeFilter?'none':'flex';
+    var _tBtnRow=document.getElementById('sr-theme-create-row');
+    if(_roomBrowserJoinOnly){
+      if(_cBtnRow)_cBtnRow.style.display='none';
+      if(_tBtnRow)_tBtnRow.style.display='none';
+    } else {
+      if(_cBtnRow)_cBtnRow.style.display=_roomBrowserThemeFilter?'none':'flex';
+      if(_tBtnRow)_tBtnRow.style.display=_roomBrowserThemeFilter?'flex':'none';
+    }
     const entries=Object.entries(this._rooms).filter(([k,r])=>{
       if(!r||r.status!=='waiting')return false;
       // Don't show locked rooms in public list
       if(r.locked)return false;
-      // FIX: Don't show rooms with zero players (ghost/orphan rooms)
+      // Don't show rooms with zero players UNLESS they have a host (may be temporarily empty)
       const playerCount=Object.keys(r.players||{}).length;
-      if(playerCount===0)return false;
+      if(playerCount===0 && !r.hostName)return false;
       // Filter by theme if a theme filter is active
       if(_roomBrowserThemeFilter && r.theme !== _roomBrowserThemeFilter)return false;
       return true;
@@ -11799,6 +11811,7 @@ const RoomBrowser={
     entries.forEach(([code,r])=>{
       const pc=Object.keys(r.players||{}).length;
       const mc=MODE_CONFIG[r.gameMode||'casual']||MODE_CONFIG.casual;
+      var hostStatus=r.hostOnline!==false?'<span style="color:#4ade80">● Live</span>':'<span style="color:#fbbf24">● Away</span>';
       const div=document.createElement('div');div.className='room-item';
       div.innerHTML=`
         <div class="ri-mode">${mc.icon}</div>
@@ -11809,8 +11822,8 @@ const RoomBrowser={
             <span>${mc.entryFee>0?'Ⓔ'+mc.entryFee.toLocaleString():'Free'}</span>
             <span>👥 ${pc}/${r.maxPlayers||4}</span>
             <span>👤 ${(r.hostName||'Host').replace(/</g,'&lt;')}</span>
-            <span>${(r.theme?(typeof THEME_LABELS!=='undefined'&&THEME_LABELS[r.theme]||r.theme):'Classic')}</span>
-            ${r.requirements?'<span>🛡️ Req</span>':'<span>🌍 Any</span>'}
+            <span>${hostStatus}</span>
+            ${!_roomBrowserThemeFilter?'<span>'+(r.theme?(typeof THEME_LABELS!=='undefined'&&THEME_LABELS[r.theme]||r.theme):'Classic')+'</span>':''}
           </div>
         </div>
         ${pc<(r.maxPlayers||4)?`<button class="ri-join" onclick="Rm.joinRoom('${code}')">Join</button>`:'<span style="font-size:10px;color:var(--txt3)">Full</span>'}`;
@@ -11944,8 +11957,9 @@ const Rm={
       if(Object.keys(reqs).length>0)roomData.requirements=reqs;
       await fbSet(roomCode,roomData);
       fbListen(roomCode,d=>this._upd(d));
-      db.ref(`${fbp(roomCode)}/players/${myId}`).onDisconnect().remove();
-      // Mark host as online with soft disconnect tracking
+      // Host player stays in room on disconnect (only mark offline, don't remove)
+      db.ref(`${fbp(roomCode)}/players/${myId}/online`).set(true);
+      db.ref(`${fbp(roomCode)}/players/${myId}/online`).onDisconnect().set(false);
       db.ref(fbp(roomCode)+'/hostOnline').set(true);
       db.ref(fbp(roomCode)+'/hostOnline').onDisconnect().set(false);
       // Start host heartbeat
@@ -12330,8 +12344,9 @@ const Rm={
         const _rprof=loadProfile();
         const _rnm=_rprof.fullName||(_rprof.name&&_rprof.name!=='Player'?_rprof.name:'Player');
         const _ruid=currentUser?currentUser.uid:null;
-        db.ref(fbp(roomCode)+'/players/'+myId).set({id:myId,name:_rnm,isHost:true,isBot:false,charId:null,uid:_ruid,ready:false}).catch(()=>{});
-        db.ref(fbp(roomCode)+'/players/'+myId).onDisconnect().remove();
+        db.ref(fbp(roomCode)+'/players/'+myId).set({id:myId,name:_rnm,isHost:true,isBot:false,charId:null,uid:_ruid,ready:false,online:true}).catch(()=>{});
+        // Host player stays in room on disconnect (only mark offline)
+        db.ref(fbp(roomCode)+'/players/'+myId+'/online').onDisconnect().set(false);
         db.ref(fbp(roomCode)+'/hostOnline').set(true);
         db.ref(fbp(roomCode)+'/hostOnline').onDisconnect().set(false);
       }
