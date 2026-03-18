@@ -710,44 +710,63 @@ width:100%;
 }
 .topup-methods-id.visible{display:flex}
 .topup-id-toggle{
-  display:none;width:100%;margin:16px 0 8px;padding:16px 20px;
-  border-radius:16px;border:2px solid rgba(220,38,38,0.4);
-  background:linear-gradient(135deg,#dc2626 0%,#b91c1c 50%,#991b1b 100%);
-  color:#fff;font-size:15px;font-weight:800;cursor:pointer;
-  transition:all .3s cubic-bezier(.22,1,.36,1);text-align:center;
-  letter-spacing:0.6px;font-family:'DM Sans',sans-serif;
+  display:none;width:100%;margin:6px 0 0;padding:10px 16px;
+  border-radius:12px;border:1px solid rgba(255,255,255,0.1);
+  background:rgba(255,255,255,0.05);
+  color:rgba(255,255,255,0.6);font-size:13px;font-weight:600;cursor:pointer;
+  transition:all .25s ease;
   position:relative;overflow:hidden;
-  box-shadow:0 4px 20px rgba(220,38,38,0.3),inset 0 1px 0 rgba(255,255,255,0.15);
-  text-shadow:0 1px 3px rgba(0,0,0,0.3);
 }
-.topup-id-toggle::before{
-  content:'';position:absolute;inset:0;
-  background:linear-gradient(180deg,rgba(255,255,255,0.12) 0%,transparent 50%);
-  pointer-events:none;border-radius:14px;
-}
-.topup-id-toggle:hover{
-  transform:translateY(-2px);
-  box-shadow:0 6px 28px rgba(220,38,38,0.45),inset 0 1px 0 rgba(255,255,255,0.2);
-  border-color:rgba(248,113,113,0.6);
-}
-.topup-id-toggle:active{transform:scale(0.97)}
-.topup-id-toggle.visible{display:flex;align-items:center;justify-content:center;gap:10px}
-.topup-id-toggle .toggle-flag{font-size:22px;line-height:1}
+.topup-id-toggle:hover{background:rgba(255,255,255,0.09);border-color:rgba(255,255,255,0.22);color:rgba(255,255,255,0.9);}
+.topup-id-toggle:active{transform:scale(0.98)}
+.topup-id-toggle.visible{display:flex;align-items:center;justify-content:center;gap:8px}
 .topup-id-toggle .toggle-label{flex:1;text-align:center}
 .topup-id-toggle .toggle-chevron{
   display:inline-flex;align-items:center;justify-content:center;
-  width:24px;height:24px;border-radius:50%;
-  background:rgba(255,255,255,0.15);
-  transition:all .3s;font-size:11px;
+  width:18px;height:18px;border-radius:50%;
+  background:rgba(255,255,255,0.1);
+  font-size:11px;
 }
-.topup-id-toggle.expanded .toggle-chevron{transform:rotate(180deg);background:rgba(255,255,255,0.25)}
-.topup-id-toggle.expanded{
-  background:linear-gradient(135deg,#b91c1c 0%,#991b1b 50%,#7f1d1d 100%);
-  border-color:rgba(248,113,113,0.5);
-  border-bottom-left-radius:4px;border-bottom-right-radius:4px;
-  margin-bottom:0;
+/* Other Pay Methods popup */
+.other-pay-overlay{
+  position:fixed;inset:0;z-index:10001;
+  background:rgba(0,0,0,0.72);backdrop-filter:blur(14px);
+  display:none;align-items:center;justify-content:center;
+  animation:fadeIn .25s ease;
 }
-.topup-methods-id{border-top-left-radius:4px;border-top-right-radius:4px}
+.other-pay-overlay.open{display:flex}
+.other-pay-modal{
+  width:min(380px,92vw);max-height:82vh;overflow-y:auto;overflow-x:hidden;
+  background:linear-gradient(170deg,#12080a 0%,#0d0610 40%,#080412 100%);
+  border:1px solid rgba(255,255,255,0.09);border-radius:22px;
+  padding:0;position:relative;
+  box-shadow:0 28px 70px rgba(0,0,0,0.85),0 0 0 1px rgba(255,255,255,0.03);
+  -webkit-overflow-scrolling:touch;
+}
+.other-pay-modal::before{
+  content:'';position:absolute;top:0;left:50%;transform:translateX(-50%);
+  width:100px;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,0.13),transparent);
+}
+.other-pay-header{
+  text-align:center;padding:20px 24px 14px;position:relative;
+  border-bottom:1px solid rgba(255,255,255,0.05);
+}
+.other-pay-header h3{
+  font-size:17px;font-weight:700;color:rgba(255,255,255,0.88);
+  margin:0;letter-spacing:0.3px;
+}
+.other-pay-close{
+  position:absolute;top:14px;right:16px;
+  width:30px;height:30px;border-radius:10px;
+  border:1px solid rgba(255,255,255,0.08);
+  background:rgba(255,255,255,0.04);color:rgba(255,255,255,0.45);
+  font-size:16px;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  transition:all .2s;
+}
+.other-pay-close:hover{background:rgba(255,255,255,0.1);color:#fff;border-color:rgba(255,255,255,0.15);}
+.other-pay-body{padding:14px 16px 20px;display:flex;flex-direction:column;gap:10px}
 .topup-id-category{
   width:100%;text-align:center;font-size:10px;letter-spacing:1.2px;
   text-transform:uppercase;color:rgba(255,255,255,0.35);margin-bottom:2px;
@@ -11224,32 +11243,20 @@ function syncCurrencyPickerUI(){
 }
 
 function updateIDPaymentMethods(){
-  const el = document.getElementById('topup-id-methods');
   const btn = document.getElementById('topup-id-toggle');
-  if(!el || !btn) return;
-  // IDR is now default - always show Indonesia payment toggle
-  // but auto-expand only for IDR
+  if(!btn) return;
+  // Always show the "Other Pay Methods" button
   btn.classList.add('visible');
-  if(_activeCurrency === 'IDR'){
-    btn.classList.add('expanded');
-    el.classList.add('visible');
-  } else {
-    btn.classList.remove('expanded');
-    el.classList.remove('visible');
-  }
 }
 
 function toggleIDMethods(){
-  const el = document.getElementById('topup-id-methods');
-  const btn = document.getElementById('topup-id-toggle');
-  if(!el || !btn) return;
-  const expanded = btn.classList.toggle('expanded');
-  if(expanded){
-    el.classList.add('visible');
-    el.scrollIntoView({behavior:'smooth',block:'nearest'});
-  } else {
-    el.classList.remove('visible');
-  }
+  const overlay = document.getElementById('other-pay-overlay');
+  if(overlay) overlay.classList.add('open');
+}
+
+function closeOtherPay(){
+  const overlay = document.getElementById('other-pay-overlay');
+  if(overlay) overlay.classList.remove('open');
 }
 
 function openTopUpShop(){
@@ -20974,8 +20981,24 @@ console.log('%c🔊 Audio System v35 loaded', 'background:#c8952a;color:#fff;pad
           <span>Pay</span>
         </div>
       </div>
-      <div class="topup-id-toggle" id="topup-id-toggle" onclick="toggleIDMethods()"><span class="toggle-flag">🇮🇩</span><span class="toggle-label">Indonesia Payment Methods</span><span class="toggle-chevron">▼</span></div>
-      <div class="topup-methods-id" id="topup-id-methods">
+      <div class="topup-id-toggle" id="topup-id-toggle" onclick="toggleIDMethods()"><span class="toggle-label">🌐 Other Pay Methods</span><span class="toggle-chevron">›</span></div>
+    </div>
+    <div class="topup-note">
+      Prices auto-convert with live exchange rates.<br>
+      Select a package above, then choose your payment method.
+    </div>
+  </div>
+</div>
+
+<!-- ═══ OTHER PAY METHODS POPUP ═══ -->
+<div class="other-pay-overlay" id="other-pay-overlay" onclick="if(event.target===this)closeOtherPay()">
+  <div class="other-pay-modal">
+    <button class="other-pay-close" onclick="closeOtherPay()">&times;</button>
+    <div class="other-pay-header">
+      <h3>🌐 Other Pay Methods</h3>
+    </div>
+    <div class="other-pay-body">
+      <div id="topup-id-methods" style="display:flex;flex-direction:column;gap:10px">
         <!-- QRIS - Universal -->
         <div class="topup-id-category">🇮🇩 QRIS — Scan &amp; Pay</div>
         <div class="topup-id-grid">
@@ -21077,10 +21100,6 @@ console.log('%c🔊 Audio System v35 loaded', 'background:#c8952a;color:#fff;pad
           </div>
         </div>
       </div>
-    </div>
-    <div class="topup-note">
-      Prices auto-convert with live exchange rates.<br>
-      Select a package above, then choose your payment method.
     </div>
   </div>
 </div>
