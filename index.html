@@ -5954,23 +5954,14 @@ function _setupAuthStateListener(){
         localStorage.setItem('_mw_authEmail',user.email||'');
         localStorage.setItem('_mw_authTs',Date.now().toString());
       } else {
-        // Only clear auth cache if this is a deliberate sign-out (not a transient state)
-        // Check if we recently had auth - if so, this might be a false negative
-        var lastTs=parseInt(localStorage.getItem('_mw_authTs')||'0');
-        if(Date.now()-lastTs>5000){
-          // More than 5 seconds since last auth - this is a real sign-out
-          localStorage.removeItem('_mw_hasAuth');
-          localStorage.removeItem('_mw_authUid');
-          localStorage.removeItem('_mw_authName');
-          localStorage.removeItem('_mw_authEmail');
-          localStorage.removeItem('_mw_authTs');
-        } else {
-          // Recent auth existed - might be transient, try token refresh
-          console.log('Auth state flicker detected, attempting token refresh...');
-          try{
-            firebase.auth().currentUser&&firebase.auth().currentUser.getIdToken(true).catch(function(){});
-          }catch(e){}
-        }
+        // FIX: NEVER clear auth cache from onAuthStateChanged(null).
+        // Firebase may fire null transiently on page load before restoring from IndexedDB.
+        // Auth cache is ONLY cleared in profileSignOut() when user explicitly signs out.
+        // Try token refresh in case this is a transient state
+        console.log('Auth null state — attempting token refresh...');
+        try{
+          firebase.auth().currentUser&&firebase.auth().currentUser.getIdToken(true).catch(function(){});
+        }catch(e){}
       }
     }catch(e){}
     if(user){ _onAuthSuccess(user); setTimeout(checkInvites, 1500); setTimeout(startFriendRequestListener, 2000); }
@@ -6003,6 +5994,21 @@ function _setupAuthStateListener(){
 }
 // Auto-init auth when page loads
 try{ authInit(); }catch(e){}
+// FIX: Immediately restore auth UI from localStorage cache while Firebase auth loads.
+// This prevents the "flash of logged-out state" on page refresh.
+try{
+  if(localStorage.getItem('_mw_hasAuth')==='1'){
+    var _cName=localStorage.getItem('_mw_authName')||'';
+    var _cEmail=localStorage.getItem('_mw_authEmail')||'';
+    // Show auth section as logged in using cached data
+    var _as=document.getElementById('prof-auth-section');
+    var _ls=document.querySelector('.prof-login-section');
+    if(_as){_as.classList.remove('hidden');var _ae=document.getElementById('prof-auth-email');if(_ae)_ae.textContent=_cEmail||'⏳ Restoring session...';}
+    if(_ls)_ls.classList.add('hidden');
+    // Hide guest notice
+    var _gn=document.getElementById('prof-guest-notice');if(_gn)_gn.style.display='none';
+  }
+}catch(e){}
 
 // One-time cleanup of orphan rooms in Firebase (rooms without status field from local play bug)
 try{
@@ -11886,6 +11892,82 @@ const Rm={
   _stopHeartbeat(){
     if(this._heartbeatTimer){clearInterval(this._heartbeatTimer);this._heartbeatTimer=null;}
   },
+  // ── Player heartbeat (ALL players, not just host) ──
+  _playerHBTimer:null,
+  _startPlayerHeartbeat(){
+    this._stopPlayerHeartbeat();
+    if(db&&roomCode&&myId){
+      db.ref(fbp(roomCode)+'/playerHeartbeats/'+myId).set(firebase.database.ServerValue.TIMESTAMP).catch(()=>{});
+    }
+    this._playerHBTimer=setInterval(()=>{
+      if(db&&roomCode&&myId){
+        db.ref(fbp(roomCode)+'/playerHeartbeats/'+myId).set(firebase.database.ServerValue.TIMESTAMP).catch(()=>{});
+      }
+    },30000);
+  },
+  _stopPlayerHeartbeat(){
+    if(this._playerHBTimer){clearInterval(this._playerHBTimer);this._playerHBTimer=null;}
+    // Clean up our heartbeat entry
+    if(db&&roomCode&&myId){
+      try{db.ref(fbp(roomCode)+'/playerHeartbeats/'+myId).remove();}catch(e){}
+    }
+  },
+  // ── AFK Detection (100 seconds = kick) ──
+  _afkChecker:null,
+  _startAFKChecker(){
+    if(this._afkChecker)clearInterval(this._afkChecker);
+    this._afkChecker=setInterval(()=>{
+      if(!isHost||!db||!roomCode)return;
+      db.ref(fbp(roomCode)+'/playerHeartbeats').once('value').then(snap=>{
+        const hbs=snap.val()||{};
+        const now=Date.now();
+        localP.forEach(p=>{
+          if(p.isBot||p.id===myId)return;
+          const lastHB=hbs[p.id]||0;
+          if(lastHB>0&&(now-lastHB)>100000){
+            // AFK > 100 seconds — auto-kick
+            console.log('AFK kick:',p.name,'last HB:',Math.round((now-lastHB)/1000)+'s ago');
+            toast('⏰ '+p.name+' kicked (AFK > 100s)');
+            if(db&&roomCode){
+              db.ref(fbp(roomCode)+'/players/'+p.id).remove().catch(()=>{});
+              db.ref(fbp(roomCode)+'/playerHeartbeats/'+p.id).remove().catch(()=>{});
+              db.ref('rooms/'+roomCode+'/lobbyChat').push({name:'System',msg:p.name+' was kicked (AFK)',sys:true,ts:Date.now()}).catch(()=>{});
+            }
+          }
+        });
+      }).catch(()=>{});
+    },15000);
+  },
+  // ── Transfer host to another player ──
+  async transferHost(pid){
+    if(!isHost){toast('Only host can transfer');return;}
+    const target=localP.find(p=>p.id===pid&&!p.isBot);
+    if(!target){toast('Invalid player');return;}
+    if(!db||!roomCode)return;
+    try{
+      // Remove our host status
+      await db.ref(`${fbp(roomCode)}/players/${myId}/isHost`).set(false);
+      // Promote target
+      await db.ref(`${fbp(roomCode)}/players/${pid}/isHost`).set(true);
+      await db.ref(fbp(roomCode)).update({
+        host:pid,hostUid:target.uid||'',hostName:target.name||'Player',
+        hostHeartbeat:firebase.database.ServerValue.TIMESTAMP
+      });
+      isHost=false;
+      toast('👑 Host transferred to '+target.name);
+      this._render();
+    }catch(e){toast('❌ Transfer failed');console.warn(e);}
+  },
+  // ── Rename room (host only) ──
+  async renameRoom(newName){
+    if(!isHost){toast('Only host can rename');return;}
+    const name=(newName||'').trim().substring(0,40);
+    if(!name){toast('Enter a room name');return;}
+    roomName=name;
+    if(db&&roomCode)await fbUp(roomCode,{roomName:name});
+    this._renderLobbyInfo();
+    toast('✏️ Room renamed to: '+name);
+  },
   async create(){
     if(!currentUser){toast('⚠️ Sign in required!');openProfilePopup();return;}
     const prof=loadProfile();
@@ -11942,8 +12024,10 @@ const Rm={
       db.ref(`${fbp(roomCode)}/players/${myId}/online`).onDisconnect().set(false);
       db.ref(fbp(roomCode)+'/hostOnline').set(true);
       db.ref(fbp(roomCode)+'/hostOnline').onDisconnect().set(false);
-      // Start host heartbeat
+      // Start host heartbeat + player heartbeat + AFK checker
       Rm._startHeartbeat();
+      Rm._startPlayerHeartbeat();
+      Rm._startAFKChecker();
     }catch(e){
       console.error('Room create error:',e);
       toast('❌ Failed to create room: '+(e.message||'Unknown error'));
@@ -12047,6 +12131,8 @@ const Rm={
       toast('🌏 Tema disesuaikan dengan host: '+(THEMES[d.theme]?.name||d.theme));
     }
     fbListen(code,d2=>this._upd(d2));
+    // Start player heartbeat for this joining player
+    Rm._startPlayerHeartbeat();
     closeOv('o-invite-player');
     this._render();this._renderLobbyInfo();goScr('sw');
     const lcp=document.getElementById('lobby-chat-panel');if(lcp)lcp.style.display='block';
@@ -12056,11 +12142,15 @@ const Rm={
   confirmLeave(){
     const mc=MODE_CONFIG[gameMode]||MODE_CONFIG.casual;
     const fee=mc.entryFee||0;
-    if(isHost&&fee>0){
-      // Show confirmation with penalty info
+    const otherHumans=localP.filter(p=>!p.isHost&&!p.isBot&&p.uid);
+    if(isHost&&otherHumans.length>0){
+      // Other players exist — host will be transferred
+      const msg=`Leave Room?\n\n👑 Host will be transferred to ${otherHumans[0].name}.${fee>0?'\nYour entry fee Ⓔ'+fee.toLocaleString()+' will be refunded.':''}\n\nContinue?`;
+      if(!confirm(msg))return;
+    } else if(isHost&&otherHumans.length===0&&fee>0){
       const penalty=Math.round(fee*0.10);
       const refund=fee-penalty;
-      const msg=`⚠️ Cancel Room?\n\nAs host, you will lose Ⓔ${penalty.toLocaleString()} (10% penalty).\nYou will be refunded Ⓔ${refund.toLocaleString()}.\nAll other players will be fully refunded.\n\nAre you sure?`;
+      const msg=`⚠️ Close Room?\n\nNo other players. You will lose Ⓔ${penalty.toLocaleString()} (10% penalty).\nRefund: Ⓔ${refund.toLocaleString()}.\n\nAre you sure?`;
       if(!confirm(msg))return;
     } else if(!isHost&&fee>0){
       const msg=`Leave Room?\n\nYour entry fee Ⓔ${fee.toLocaleString()} will be refunded.`;
@@ -12072,55 +12162,75 @@ const Rm={
     this._cancelCountdown();
     const mc=MODE_CONFIG[gameMode]||MODE_CONFIG.casual;
     const fee=mc.entryFee||0;
-    if(isHost&&fee>0){
-      // Host cancellation penalty: lose 10% of entry fee
-      const penalty=Math.round(fee*0.10);
-      const refundHost=fee-penalty;
-      const curBal=getECoinBalance();
-      setECoinBalance(curBal+refundHost);
-      toast('⚠️ Room cancelled! Penalty: Ⓔ'+penalty.toLocaleString()+' | Refund: Ⓔ'+refundHost.toLocaleString());
-      // Refund all other players their full entry fee via Firebase
-      if(db&&roomCode){
-        const otherPlayers=localP.filter(p=>!p.isHost&&!p.isBot&&p.uid);
-        for(const op of otherPlayers){
-          try{
-            // Write refund record so player can claim it
-            await db.ref('refunds/'+op.uid+'/'+roomCode).set({
-              amount:fee,
-              reason:'Host cancelled room',
-              roomName:roomName||'Room',
-              gameMode:gameMode,
-              timestamp:firebase.database.ServerValue.TIMESTAMP
-            });
-          }catch(e){console.warn('Refund write error:',e);}
+    if(isHost){
+      // HOST LEAVING: Try to transfer host to next human player
+      const otherHumans=localP.filter(p=>!p.isHost&&!p.isBot&&p.uid);
+      if(otherHumans.length>0&&db&&roomCode){
+        // Transfer host to first available human player
+        const newHost=otherHumans[0];
+        try{
+          // Cancel our onDisconnect handlers
+          try{db.ref(fbp(roomCode)+'/hostOnline').onDisconnect().cancel();}catch(e){}
+          try{db.ref(fbp(roomCode)+'/players/'+myId).onDisconnect().cancel();}catch(e){}
+          // Remove ourselves from players
+          await db.ref(`${fbp(roomCode)}/players/${myId}`).remove();
+          // Promote new host
+          await db.ref(`${fbp(roomCode)}/players/${newHost.id}/isHost`).set(true);
+          await db.ref(fbp(roomCode)).update({
+            host:newHost.id,
+            hostUid:newHost.uid||'',
+            hostName:newHost.name||'Player',
+            hostOnline:true,
+            hostHeartbeat:firebase.database.ServerValue.TIMESTAMP
+          });
+          // Set new host's onDisconnect
+          db.ref(`${fbp(roomCode)}/hostOnline`).onDisconnect().set(false);
+          db.ref(`${fbp(roomCode)}/players/${newHost.id}/online`).onDisconnect().set(false);
+          toast('👑 Host transferred to '+newHost.name);
+          // Refund leaving host entry fee (no penalty when transferring)
+          if(fee>0){
+            setECoinBalance(getECoinBalance()+fee);
+            toast('💰 Entry fee Ⓔ'+fee.toLocaleString()+' refunded');
+          }
+        }catch(e){
+          console.warn('Host transfer error:',e);
+          // Fallback: delete room if transfer fails
+          try{db.ref(`${fbp(roomCode)}`).remove();}catch(e2){}
+        }
+      } else {
+        // No other human players — delete room
+        if(fee>0){
+          const penalty=Math.round(fee*0.10);
+          const refundHost=fee-penalty;
+          setECoinBalance(getECoinBalance()+refundHost);
+          toast('⚠️ Room closed! Penalty: Ⓔ'+penalty.toLocaleString()+' | Refund: Ⓔ'+refundHost.toLocaleString());
+        } else {
+          toast('Room closed');
+        }
+        if(db&&roomCode){
+          try{db.ref(fbp(roomCode)+'/hostOnline').onDisconnect().cancel();}catch(e){}
+          try{db.ref(fbp(roomCode)+'/players/'+myId).onDisconnect().cancel();}catch(e){}
+          try{db.ref(`${fbp(roomCode)}`).remove();}catch(e){}
         }
       }
-    } else if(isHost&&fee===0){
-      // Casual mode - no penalty
-      toast('Room cancelled');
-    } else if(!isHost&&fee>0){
-      // Non-host player leaving: refund their entry fee
-      const curBal=getECoinBalance();
-      setECoinBalance(curBal+fee);
-      toast('💰 Entry fee Ⓔ'+fee.toLocaleString()+' refunded');
-    }
-    if(db&&roomCode&&myId){
-      try{db.ref(`${fbp(roomCode)}/players/${myId}`).remove();}catch(e){}
-      try{db.ref(`${fbp(roomCode)}`).off();}catch(e){}
-      if(isHost){
-        // Cancel onDisconnect handlers before explicit deletion
-        try{db.ref(fbp(roomCode)+'/hostOnline').onDisconnect().cancel();}catch(e){}
-        try{db.ref(fbp(roomCode)+'/players/'+myId).onDisconnect().cancel();}catch(e){}
-        try{db.ref(`${fbp(roomCode)}`).remove();}catch(e){}
+    } else {
+      // NON-HOST leaving
+      if(fee>0){
+        setECoinBalance(getECoinBalance()+fee);
+        toast('💰 Entry fee Ⓔ'+fee.toLocaleString()+' refunded');
+      }
+      if(db&&roomCode&&myId){
+        try{db.ref(`${fbp(roomCode)}/players/${myId}`).remove();}catch(e){}
       }
     }
-    Rm._stopHeartbeat();
+    if(db&&roomCode){try{db.ref(`${fbp(roomCode)}`).off();}catch(e){}}
+    Rm._stopHeartbeat();Rm._stopPlayerHeartbeat();
     LobbyChat.stop();
     if(typeof GameChat!=='undefined'&&GameChat.stopFirebase)GameChat.stopFirebase();
-    // FIX: Clean up multiplayer intervals
     if(Rm._staleTurnChecker){clearInterval(Rm._staleTurnChecker);Rm._staleTurnChecker=null;}
     if(Rm._aucCountdown){clearInterval(Rm._aucCountdown);Rm._aucCountdown=null;}
     if(Rm._staleAucChecker){clearInterval(Rm._staleAucChecker);Rm._staleAucChecker=null;}
+    if(Rm._afkChecker){clearInterval(Rm._afkChecker);Rm._afkChecker=null;}
     localP=[];roomCode='';isHost=false;gameMode='casual';roomName='';
     goScr('sr');
     RoomBrowser.start();
@@ -12227,6 +12337,8 @@ const Rm={
         (p.ready?'<span class="lobby-ready-badge ready">✓ Ready</span>':'<span class="lobby-ready-badge not-ready">Not Ready</span>');
       // Kick button (host only, not self, not during countdown)
       const kickHtml=(!p.isHost&&!p.isBot&&isHost)?`<button class="kick-btn" onclick="Rm.kickPlayer('${p.id}')">✕ Kick</button>`:'';
+      // Transfer host button (host only, to non-bot non-self players)
+      const transferHtml=(!p.isHost&&!p.isBot&&isHost)?`<button class="kick-btn" style="background:rgba(200,149,42,.12);color:var(--gold2);border-color:rgba(200,149,42,.3)" onclick="Rm.transferHost('${p.id}')">👑 Host</button>`:'';
       // Remove bot button
       // FIX: Allow host to remove bots in both online and offline mode
       const removeBotHtml=(p.isBot&&isHost)?`<button class="kick-btn" onclick="Rm.removeBot('${p.id}')">✕ Remove</button>`:'';
@@ -12234,7 +12346,7 @@ const Rm={
       const slotLabel=slotNum===1
         ?`<span style="font-size:9px;color:var(--gold2);font-weight:700">🥇 Slot 1 · Goes First</span>`
         :`<span style="font-size:9px;color:var(--txt3)">Slot ${slotNum}</span>`;
-      r.innerHTML=`${tokenHtml}<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:700">${p.name}${p.isHost?' 👑':''}${p.isBot?' 🤖':''}</div><div style="font-size:10px;color:var(--txt3)">${ch?ch.full:'No token selected'}</div><div style="margin-top:2px">${slotLabel}</div></div>${readyHtml}${kickHtml}${removeBotHtml}`;
+      r.innerHTML=`${tokenHtml}<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:700">${p.name}${p.isHost?' 👑':''}${p.isBot?' 🤖':''}</div><div style="font-size:10px;color:var(--txt3)">${ch?ch.full:'No token selected'}</div><div style="margin-top:2px">${slotLabel}</div></div>${readyHtml}<div style="display:flex;gap:4px">${transferHtml}${kickHtml}${removeBotHtml}</div>`;
       c.appendChild(r);
     });
     // Render empty slots
@@ -12277,43 +12389,61 @@ const Rm={
   },
   _upd(d){
     if(!d){
-      if(!isHost){
-        const closeMc=MODE_CONFIG[gameMode||'casual']||MODE_CONFIG.casual;
-        const _inActiveGame2=!document.getElementById('sg')?.classList.contains('out');
-        if(_inActiveGame2){
-          // FIX: During an active game, brief host disconnect should NOT immediately end the session.
-          // Give a 5-second grace period. If the room is still gone, THEN exit.
-          toast('⚠️ Host disconnected! Checking in 5 seconds...');
-          const _savedRoomCode=roomCode;
-          setTimeout(()=>{
-            if(!_savedRoomCode||!db)return;
-            db.ref('rooms/'+_savedRoomCode).once('value').then(recheckSnap=>{
-              if(!recheckSnap.val()){
-                if(closeMc.entryFee>0){
-                  setECoinBalance(getECoinBalance()+closeMc.entryFee);
-                  toast('⚠️ Host left permanently. Entry fee Ⓔ'+closeMc.entryFee.toLocaleString()+' refunded');
-                }else toast('⚠️ Host disconnected — game ended');
-                Rm._cancelCountdown();LobbyChat.stop();
-                localP=[];roomCode='';_roomBrowserThemeFilter=null;_roomBrowserJoinOnly=false;RoomBrowser.stop();goScr('sr');RoomBrowser.start();
-              }
-              // else: host reconnected and room is back — stay in game silently
-            }).catch(()=>{});
-          },5000);
-          return;
-        }
-        // In lobby — immediate exit with refund
-        if(closeMc.entryFee>0){
-          setECoinBalance(getECoinBalance()+closeMc.entryFee);
-          toast('⚠️ Room closed by host. Entry fee Ⓔ'+closeMc.entryFee.toLocaleString()+' refunded');
-        }else{
-          toast('⚠️ Room was closed by the host');
-        }
-        this._cancelCountdown();
-        LobbyChat.stop();
-        localP=[];roomCode='';_roomBrowserJoinOnly=false;
-        RoomBrowser.stop();goScr('sr');RoomBrowser.start();
+      // Room was deleted from Firebase
+      const closeMc=MODE_CONFIG[gameMode||'casual']||MODE_CONFIG.casual;
+      const _inActiveGame2=!document.getElementById('sg')?.classList.contains('out');
+      if(_inActiveGame2){
+        // During active game — grace period check
+        toast('⚠️ Room disconnected! Checking...');
+        const _savedRoomCode=roomCode;
+        setTimeout(()=>{
+          if(!_savedRoomCode||!db)return;
+          db.ref('rooms/'+_savedRoomCode).once('value').then(recheckSnap=>{
+            if(!recheckSnap.val()){
+              if(closeMc.entryFee>0){
+                setECoinBalance(getECoinBalance()+closeMc.entryFee);
+                toast('⚠️ Room closed. Entry fee Ⓔ'+closeMc.entryFee.toLocaleString()+' refunded');
+              }else toast('⚠️ Room closed — game ended');
+              Rm._cancelCountdown();Rm._stopPlayerHeartbeat();LobbyChat.stop();
+              if(Rm._afkChecker){clearInterval(Rm._afkChecker);Rm._afkChecker=null;}
+              localP=[];roomCode='';_roomBrowserThemeFilter=null;_roomBrowserJoinOnly=false;RoomBrowser.stop();goScr('sr');RoomBrowser.start();
+            }
+          }).catch(()=>{});
+        },5000);
+        return;
       }
+      // In lobby — exit
+      if(closeMc.entryFee>0){
+        setECoinBalance(getECoinBalance()+closeMc.entryFee);
+        toast('⚠️ Room closed. Entry fee Ⓔ'+closeMc.entryFee.toLocaleString()+' refunded');
+      }else{
+        toast('⚠️ Room was closed');
+      }
+      this._cancelCountdown();Rm._stopPlayerHeartbeat();LobbyChat.stop();
+      if(Rm._afkChecker){clearInterval(Rm._afkChecker);Rm._afkChecker=null;}
+      localP=[];roomCode='';_roomBrowserJoinOnly=false;
+      RoomBrowser.stop();goScr('sr');RoomBrowser.start();
       return;
+    }
+    // FIX: Detect host transfer — if I was promoted to host by previous host leaving
+    if(d.host&&d.players&&d.players[myId]&&d.players[myId].isHost&&!isHost){
+      isHost=true;
+      toast('👑 You are now the host!');
+      Rm._startHeartbeat();
+      Rm._startAFKChecker();
+      // Set up host onDisconnect handlers
+      if(db&&roomCode){
+        db.ref(fbp(roomCode)+'/hostOnline').set(true);
+        db.ref(fbp(roomCode)+'/hostOnline').onDisconnect().set(false);
+        db.ref(fbp(roomCode)+'/players/'+myId+'/online').onDisconnect().set(false);
+      }
+    }
+    // FIX: Detect if I lost host status (host was transferred away from me)
+    if(d.players&&d.players[myId]&&!d.players[myId].isHost&&isHost){
+      isHost=false;
+      Rm._stopHeartbeat();
+      if(Rm._afkChecker){clearInterval(Rm._afkChecker);Rm._afkChecker=null;}
+      toast('👑 Host transferred to another player');
     }
     // Check if we were kicked — skip this check during an active game
     // (brief disconnects can remove player from d.players mid-game)
@@ -12372,10 +12502,11 @@ const Rm={
     });
     // FIX: Skip lobby render during active gameplay (performance optimization)
     const _inGame=!document.getElementById('sg')?.classList.contains('out');
-    // FIX: Auto-delete room from Firebase when all human players have left
+    // FIX: Auto-delete room from Firebase when ALL players have left (no humans at all)
     if(d && (d.status==='waiting' || d.status==='playing')) {
-      const humanPlayers=Object.values(d.players||{}).filter(p=>!p.isBot);
-      if(humanPlayers.length===0 && isHost && db && roomCode) {
+      const allPlayers=Object.values(d.players||{});
+      const humanPlayers=allPlayers.filter(p=>!p.isBot);
+      if(humanPlayers.length===0 && db && roomCode) {
         db.ref('rooms/'+roomCode).remove().catch(()=>{});
         return;
       }
@@ -12403,6 +12534,8 @@ const Rm={
         GRP_CELLS=THEMES[d.theme]?.GRP_CELLS||GRP_CELLS;
       }
       GS=d.gs;myIdx=GS.pls.findIndex(p=>p.id===myId);
+      // CRITICAL: Reset _busy on every remote GS update so buttons aren't stuck
+      G._busy=false;
       // FIX: If myId not found (page refresh / reconnect), fall back to UID match
       if(myIdx===-1&&currentUser){
         const _byUid=GS.pls.findIndex(p=>p.uid===currentUser.uid);
@@ -12421,8 +12554,20 @@ const Rm={
         });
       } else {
         // Already in game — silently update state from Firebase push
-        // FIX: Don't re-draw entire board on every state update — only update tokens/dots/HUD
-        requestAnimationFrame(()=>{setTimeout(()=>{Board.tokens();Board.dots();updHUD();updStrip();G.sync();},80);});
+        requestAnimationFrame(()=>{setTimeout(()=>{
+          Board.tokens();Board.dots();updHUD();updStrip();
+          // CRITICAL: Close stuck overlays from OTHER players' turns
+          // When GS.cur changes to my turn, ensure no stale overlays block me
+          const _isNowMyTurn=GS.pls?.[GS.cur]?.id===myId;
+          if(_isNowMyTurn&&!GS.rolled){
+            // New turn for me — close any lingering non-my overlays
+            ['o-rent','o-tax','o-jgo'].forEach(oid=>{
+              const oel=$(oid);
+              if(oel&&oel.classList.contains('open'))closeOv(oid);
+            });
+          }
+          G.sync();
+        },80);});
       }
     }
     // FIX: Multiplayer auction sync — listen for auction state changes
@@ -15388,6 +15533,10 @@ const G={
         setLog(`🎲 ${p.name}: ${d1}+${d2} ${i18n('rolledDouble')}`,true);GS.rolled=false;
       }else{GS.dc=0;GS.rolled=true;setLog(`🎲 ${p.name}: ${d1}+${d2}=${d1+d2}`)}
       await this._mv(GS.cur,d1+d2,dbl);
+      // CRITICAL FIX: Always reset _busy after move completes.
+      // Overlays (rent/tax/card) have their own guards via _mandatoryOpen in sync().
+      // Without this, buttons stay permanently disabled after landing on GO/park/jail/property.
+      this._busy=false;this.sync();
     }catch(err){
       console.error('Roll error:',err);
       this._busy=false;this.sync();
@@ -15746,7 +15895,7 @@ const G={
     setLog(`${p.name} ${i18n('jailUsedCard')}`,true);updHUD();updStrip();this._push();this.sync();
   },
 
-  jailGoDismiss(){closeOv('o-jgo');this._push();this.sync()},
+  jailGoDismiss(){closeOv('o-jgo');this._busy=false;this._push();this.sync()},
   _toJail(idx){const p=GS.pls[idx];p.pos=JAILP;p.inJail=true;p.jt=0;Board.tokens();GlowFX.sync();updStrip();setLog(`${p.name} ${i18n('wentToJail')}`,true)},
 
   _pModal(cell,pi,mode){
