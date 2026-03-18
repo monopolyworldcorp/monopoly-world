@@ -3447,6 +3447,9 @@ body.popup-active .tok-emoji-ring{opacity:0!important;pointer-events:none!import
   border-radius:16px;padding:28px 24px;width:min(88vw,360px);text-align:center;
   transform:translateY(20px);transition:transform .3s ease}
 #theme-play-overlay.active .theme-play-box{transform:translateY(0)}
+.tp-mode-card{flex:1;min-width:85px;max-width:120px;padding:12px 8px;border-radius:12px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.03);text-align:center;cursor:pointer;transition:all .2s ease;color:#fff}
+.tp-mode-card:hover{border-color:rgba(200,149,42,.3);background:rgba(200,149,42,.06)}
+.tp-mode-card.selected{border-color:rgba(200,149,42,.6);background:linear-gradient(135deg,rgba(200,149,42,.15),rgba(200,149,42,.05));box-shadow:0 0 20px rgba(200,149,42,.15)}
 .theme-play-title{font-family:'Bebas Neue',sans-serif;font-size:22px;letter-spacing:3px;
   color:rgba(200,149,42,.9);margin-bottom:4px}
 .theme-play-sub{font-family:'DM Sans',sans-serif;font-size:11px;color:rgba(255,255,255,.4);margin-bottom:18px}
@@ -4175,6 +4178,9 @@ body.popup-active .tok-emoji-ring{opacity:0!important;pointer-events:none!import
   <!-- Action buttons top -->
   <div id="sr-create-btn-row" style="display:flex;gap:8px;width:100%;max-width:420px;margin-bottom:12px">
     <button class="btn btn-gold" style="flex:1" onclick="openCreateRoom()">➕ Create Room</button>
+  </div>
+  <div id="sr-theme-create-row" style="display:none;gap:8px;width:100%;max-width:420px;margin-bottom:12px">
+    <button class="btn btn-gold" style="flex:1" onclick="themeFilterCreateRoom()">➕ Create Room</button>
   </div>
 
   <!-- Theme filter bar (shown when browsing from theme selection) -->
@@ -6250,6 +6256,10 @@ function syncProfileToCloud(prof){
         eCoins:prof.eCoins||0
   };
   db.ref('users/'+currentUser.uid).update(data).catch(e=>console.warn('Cloud sync error:',e));
+  // Also ensure username is registered in the usernames index for search/invite
+  if(prof.username && currentUser){
+    db.ref('usernames/'+prof.username).set(currentUser.uid).catch(e=>console.warn('Username index sync:',e));
+  }
 }
 
 // ═══════════════════════════════════════════
@@ -7013,7 +7023,8 @@ function checkInvites(){
         // FIX: Use non-blocking toast + auto-join instead of blocking confirm()
         const invToast=document.createElement('div');
         invToast.style.cssText='position:fixed;top:60px;left:50%;transform:translateX(-50%);z-index:99999;background:linear-gradient(135deg,#1a1a2e,#16213e);border:1px solid rgba(200,149,42,.4);border-radius:12px;padding:14px 20px;color:#fff;font-size:13px;display:flex;gap:12px;align-items:center;box-shadow:0 8px 32px rgba(0,0,0,.5);max-width:90vw';
-        invToast.innerHTML='<div style="flex:1"><div style="font-weight:700;margin-bottom:4px">🎮 '+inv.fromName+' invited you!</div><div style="font-size:11px;color:rgba(255,255,255,.6)">Room: '+inv.roomCode+'</div></div><button class="_inv_j" style="padding:8px 16px;background:linear-gradient(135deg,rgba(34,197,94,.3),rgba(34,197,94,.15));border:1px solid rgba(34,197,94,.4);border-radius:8px;color:#4ade80;font-weight:700;font-size:12px;cursor:pointer">Join</button><button class="_inv_d" style="padding:8px 12px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:8px;color:rgba(255,255,255,.5);font-size:12px;cursor:pointer">✕</button>';
+        var _modeInfo=inv.modeLabel?(inv.modeLabel+' · '):'';
+        invToast.innerHTML='<div style="flex:1"><div style="font-weight:700;margin-bottom:4px">🎮 '+inv.fromName+' invited you!</div><div style="font-size:11px;color:rgba(255,255,255,.6)">'+_modeInfo+'Room: '+(inv.roomName||inv.roomCode)+'</div></div><button class="_inv_j" style="padding:8px 16px;background:linear-gradient(135deg,rgba(34,197,94,.3),rgba(34,197,94,.15));border:1px solid rgba(34,197,94,.4);border-radius:8px;color:#4ade80;font-weight:700;font-size:12px;cursor:pointer">Join</button><button class="_inv_d" style="padding:8px 12px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:8px;color:rgba(255,255,255,.5);font-size:12px;cursor:pointer">✕</button>';
         document.body.appendChild(invToast);
         const _rc=inv.roomCode;
         const _removeToast=()=>{invToast.style.opacity='0';invToast.style.transition='opacity .3s';setTimeout(()=>invToast.remove(),300);};
@@ -8415,6 +8426,7 @@ const THEME_FLAGS={
 
 var _pendingPlayTheme='nusantara';
 var _roomBrowserThemeFilter=null;
+var _pendingPlayMode='casual';
 
 function onThemeClick(t){
   if(typeof SFX!=='undefined'&&SFX.play)SFX.play('click');
@@ -8433,9 +8445,12 @@ function showThemePlayOverlay(t){
   if(title) title.textContent=(THEME_FLAGS[t]||'🌏')+' '+(THEME_LABELS[t]||t.toUpperCase());
   // Reset to step 1
   var step1=document.getElementById('tp-step1');
+  var stepMode=document.getElementById('tp-step-mode');
   var step2=document.getElementById('tp-step2');
   if(step1) step1.style.display='';
+  if(stepMode) stepMode.style.display='none';
   if(step2) step2.style.display='none';
+  _pendingPlayMode='casual';
   var sub=document.getElementById('tp-sub');
   if(sub) sub.textContent='Choose how to play';
   // Show overlay
@@ -8459,25 +8474,74 @@ function themePlayLocal(){
 
 function themePlayOnline(){
   if(typeof SFX!=='undefined'&&SFX.play)SFX.play('click');
-  // Switch to step 2: Create Room / Join Room
+  _pendingPlayMode='casual';
+  // Switch to step 1.5: Mode selection
   var step1=document.getElementById('tp-step1');
-  var step2=document.getElementById('tp-step2');
+  var stepMode=document.getElementById('tp-step-mode');
   if(step1) step1.style.display='none';
-  if(step2) step2.style.display='';
+  if(stepMode) stepMode.style.display='';
   var sub=document.getElementById('tp-sub');
-  if(sub) sub.textContent='Online multiplayer';
-  // Update room count hint
-  _updateThemeRoomCount();
+  if(sub) sub.textContent='Select game mode';
+  // Update mode card UI
+  _updateThemeModeCards();
 }
 
 function themePlayOnlineBack(){
   if(typeof SFX!=='undefined'&&SFX.play)SFX.play('click');
   var step1=document.getElementById('tp-step1');
+  var stepMode=document.getElementById('tp-step-mode');
   var step2=document.getElementById('tp-step2');
   if(step1) step1.style.display='';
+  if(stepMode) stepMode.style.display='none';
   if(step2) step2.style.display='none';
   var sub=document.getElementById('tp-sub');
   if(sub) sub.textContent='Choose how to play';
+}
+
+function selectThemeMode(mode){
+  if(typeof SFX!=='undefined'&&SFX.play)SFX.play('click');
+  _pendingPlayMode=mode;
+  _updateThemeModeCards();
+}
+
+function _updateThemeModeCards(){
+  document.querySelectorAll('.tp-mode-card').forEach(function(c){
+    c.classList.toggle('selected',c.dataset.mode===_pendingPlayMode);
+  });
+  // Update fee display
+  var mc=MODE_CONFIG[_pendingPlayMode]||MODE_CONFIG.casual;
+  var feeEl=document.getElementById('tp-fee-display');
+  if(feeEl){
+    if(mc.entryFee>0){
+      feeEl.textContent='Entry Fee: Ⓔ '+mc.entryFee.toLocaleString();
+      feeEl.style.color='#fbbf24';
+    } else {
+      feeEl.textContent='Entry Fee: FREE';
+      feeEl.style.color='#4ade80';
+    }
+  }
+}
+
+function themeModeContinue(){
+  if(typeof SFX!=='undefined'&&SFX.play)SFX.play('click');
+  var stepMode=document.getElementById('tp-step-mode');
+  var step2=document.getElementById('tp-step2');
+  if(stepMode) stepMode.style.display='none';
+  if(step2) step2.style.display='';
+  var sub=document.getElementById('tp-sub');
+  var mc=MODE_CONFIG[_pendingPlayMode]||MODE_CONFIG.casual;
+  if(sub) sub.textContent=mc.label+' Mode · '+(mc.entryFee>0?'Ⓔ '+mc.entryFee.toLocaleString()+' entry':'Free entry');
+  _updateThemeRoomCount();
+}
+
+function themeStep2Back(){
+  if(typeof SFX!=='undefined'&&SFX.play)SFX.play('click');
+  var stepMode=document.getElementById('tp-step-mode');
+  var step2=document.getElementById('tp-step2');
+  if(stepMode) stepMode.style.display='';
+  if(step2) step2.style.display='none';
+  var sub=document.getElementById('tp-sub');
+  if(sub) sub.textContent='Select game mode';
 }
 
 function _updateThemeRoomCount(){
@@ -8540,8 +8604,8 @@ async function themeCreateRoom(){
   var themeName=(typeof THEME_LABELS!=='undefined'&&THEME_LABELS[_pendingPlayTheme])||_pendingPlayTheme||'Classic';
   var rn=nm+"'s "+themeName+' Room';
   // Set room parameters
-  _crMode='casual';_crLocked=false;_crReqMode='any';
-  gameMode='casual';roomLocked=false;maxP=4;roomName=rn;
+  _crMode=_pendingPlayMode||'casual';_crLocked=false;_crReqMode='any';
+  gameMode=_pendingPlayMode||'casual';roomLocked=false;maxP=4;roomName=rn;
   roomCode=genCode();isHost=true;
   myId='p_'+Date.now();
   var uid=currentUser.uid;
@@ -8563,7 +8627,9 @@ async function themeCreateRoom(){
     players:{[myId]:localP[0]},
     entryFeePerPlayer:mc.entryFee||0,
     theme:_pendingPlayTheme||currentTheme,
-    createdAt:firebase.database.ServerValue.TIMESTAMP
+    createdAt:firebase.database.ServerValue.TIMESTAMP,
+    hostHeartbeat:firebase.database.ServerValue.TIMESTAMP,
+    hostOnline:true
   };
   // Write to Firebase
   fbSet(roomCode,roomData).then(function(){
@@ -11366,6 +11432,12 @@ function clearRoomThemeFilter(){
   RoomBrowser.refresh();
 }
 
+function themeFilterCreateRoom(){
+  // Create a room with the current theme filter and pending mode
+  _pendingPlayTheme=_roomBrowserThemeFilter||_pendingPlayTheme||'nusantara';
+  themeCreateRoom();
+}
+
 function goRoom(){
   goScr('sr');
   // Show/hide theme filter bar
@@ -11375,15 +11447,21 @@ function goRoom(){
       filterBar.style.display='flex';
       var label=document.getElementById('rtf-label');
       var themeName=(typeof THEME_LABELS!=='undefined'&&THEME_LABELS[_roomBrowserThemeFilter])||_roomBrowserThemeFilter||'';
-      if(label) label.innerHTML='🎯 Showing <strong>'+themeName+'</strong> rooms';
+      var mc=MODE_CONFIG[_pendingPlayMode||'casual']||MODE_CONFIG.casual;
+      if(label) label.innerHTML='🎯 Showing <strong>'+themeName+'</strong> rooms · '+mc.icon+' '+mc.label;
     } else {
       filterBar.style.display='none';
     }
   }
   // Show/hide create button based on context
   var createBtnRow=document.getElementById('sr-create-btn-row');
-  if(createBtnRow){
-    createBtnRow.style.display=_roomBrowserThemeFilter?'none':'flex';
+  var themeCreateRow=document.getElementById('sr-theme-create-row');
+  if(_roomBrowserThemeFilter){
+    if(createBtnRow) createBtnRow.style.display='none';
+    if(themeCreateRow) themeCreateRow.style.display='flex';
+  } else {
+    if(createBtnRow) createBtnRow.style.display='flex';
+    if(themeCreateRow) themeCreateRow.style.display='none';
   }
   // Show login status
   var loginStatus=document.getElementById('room-login-status');
@@ -11427,8 +11505,8 @@ async function openCreateRoom(){
   }
   if(!currentUser) currentUser=firebase.auth().currentUser;
   if(!currentUser){toast('⚠️ Sign in required to create a room!');openProfilePopup();return;}
-  _crMode='casual';_crLocked=false;_crReqMode='any';
-  document.querySelectorAll('.mode-card').forEach(c=>c.classList.toggle('selected',c.dataset.mode==='casual'));
+  _crMode=_pendingPlayMode||'casual';_crLocked=false;_crReqMode='any';
+  document.querySelectorAll('.mode-card').forEach(c=>c.classList.toggle('selected',c.dataset.mode===_crMode));
   document.getElementById('cr-public')?.classList.add('active');
   document.getElementById('cr-locked')?.classList.remove('active');
   // Reset requirements toggle to "Any Player"
@@ -11466,17 +11544,34 @@ function searchPlayersToInvite(query){
   _inviteSearchTimeout=setTimeout(function(){
     if(!db){results.innerHTML='<div style="text-align:center;color:#fca5a5;font-size:12px;padding:16px 0">❌ Not connected</div>';return;}
     // Search usernames that start with query
-    db.ref('usernames').orderByKey().startAt(query).endAt(query+'\uf8ff').limitToFirst(10).once('value').then(function(snap){
-      var usernames=snap.val()||{};
-      var entries=Object.entries(usernames).filter(function(e){return e[1]!==currentUser.uid;});
+    var usernameSearch=db.ref('usernames').orderByKey().startAt(query).endAt(query+'\uf8ff').limitToFirst(10).once('value');
+    // Also search users by name (fallback)
+    var nameSearch=db.ref('users').orderByChild('name').startAt(query).endAt(query+'\uf8ff').limitToFirst(10).once('value');
+    Promise.all([usernameSearch,nameSearch]).then(function(results2){
+      var usernameSnap=results2[0];
+      var nameSnap=results2[1];
+      var usernames=usernameSnap.val()||{};
+      var nameUsers=nameSnap.val()||{};
+      // Merge results: username matches + name matches
+      var uidMap={};
+      Object.entries(usernames).forEach(function(e){
+        if(e[1]!==currentUser.uid) uidMap[e[1]]={username:e[0],uid:e[1]};
+      });
+      Object.entries(nameUsers).forEach(function(e){
+        if(e[0]!==currentUser.uid && !uidMap[e[0]]){
+          uidMap[e[0]]={username:e[1].username||'',uid:e[0],profileData:e[1]};
+        }
+      });
+      var entries=Object.values(uidMap);
       if(entries.length===0){
         results.innerHTML='<div style="text-align:center;color:var(--txt3);font-size:12px;padding:16px 0">No players found for "'+query+'"</div>';
         return;
       }
       // Load user profiles for each result
       Promise.all(entries.map(function(e){
-        return db.ref('users/'+e[1]).once('value').then(function(s){
-          return {username:e[0],uid:e[1],profile:s.val()||{}};
+        if(e.profileData) return Promise.resolve({username:e.username,uid:e.uid,profile:e.profileData});
+        return db.ref('users/'+e.uid).once('value').then(function(s){
+          return {username:e.username,uid:e.uid,profile:s.val()||{}};
         });
       })).then(function(players){
         results.innerHTML='';
@@ -11503,17 +11598,21 @@ function searchPlayersToInvite(query){
 function sendGameInvite(targetUid,targetName){
   if(!currentUser||!roomCode){toast('❌ Cannot send invite');return;}
   var prof=loadProfile();
+  var mc=MODE_CONFIG[gameMode||'casual']||MODE_CONFIG.casual;
   db.ref('invites/'+targetUid+'/'+currentUser.uid).set({
     fromName:prof.name||prof.fullName||'Player',
     fromUid:currentUser.uid,
     roomCode:roomCode,
     roomName:roomName||'Room',
     theme:_pendingPlayTheme||currentTheme||'nusantara',
+    gameMode:gameMode||'casual',
+    modeLabel:mc.label||'Casual',
     timestamp:Date.now()
   }).then(function(){
     toast('🎮 Invite sent to '+targetName+'!');
-  }).catch(function(){
-    toast('❌ Failed to send invite');
+  }).catch(function(err){
+    console.error('Invite send error:',err);
+    toast('❌ Failed to send invite: '+(err.message||'Unknown error'));
   });
 }
 function selectMode(m){
@@ -11838,7 +11937,9 @@ const Rm={
         players:{[myId]:localP[0]},
         entryFeePerPlayer:mc.entryFee||0,
         theme:_pendingPlayTheme||currentTheme||'nusantara',
-        createdAt:firebase.database.ServerValue.TIMESTAMP
+        createdAt:firebase.database.ServerValue.TIMESTAMP,
+        hostHeartbeat:firebase.database.ServerValue.TIMESTAMP,
+        hostOnline:true
       };
       if(Object.keys(reqs).length>0)roomData.requirements=reqs;
       await fbSet(roomCode,roomData);
@@ -20596,6 +20697,40 @@ console.log('%c🔊 Audio System v35 loaded', 'background:#c8952a;color:#fff;pad
         </div>
       </button>
     </div>
+    <!-- Step 1.5: Select Game Mode (Casual / Business / Tycoon) -->
+    <div class="theme-online-options" id="tp-step-mode" style="display:none">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-bottom:10px">
+        <div class="tp-mode-card selected" data-mode="casual" onclick="selectThemeMode('casual')">
+          <div style="font-size:22px">🎯</div>
+          <div style="font-weight:700;font-size:12px">Casual</div>
+          <div style="font-size:9px;color:rgba(255,255,255,.5);line-height:1.3">Free entry<br>Stats only</div>
+        </div>
+        <div class="tp-mode-card" data-mode="business" onclick="selectThemeMode('business')">
+          <div style="font-size:22px">💼</div>
+          <div style="font-weight:700;font-size:12px">Business</div>
+          <div style="font-size:9px;color:rgba(255,255,255,.5);line-height:1.3">Ⓔ 20K entry<br>Real stakes</div>
+        </div>
+        <div class="tp-mode-card" data-mode="tycoon" onclick="selectThemeMode('tycoon')">
+          <div style="font-size:22px">👑</div>
+          <div style="font-weight:700;font-size:12px">Tycoon</div>
+          <div style="font-size:9px;color:rgba(255,255,255,.5);line-height:1.3">Ⓔ 100K entry<br>All ×5!</div>
+        </div>
+      </div>
+      <div id="tp-fee-display" style="text-align:center;font-size:12px;font-weight:600;margin-bottom:10px;color:#4ade80">Entry Fee: FREE</div>
+      <button class="theme-online-btn" onclick="themeModeContinue()" style="border-color:rgba(200,149,42,.4);background:linear-gradient(135deg,rgba(200,149,42,.12),rgba(200,149,42,.04))">
+        <span class="tp-icon">→</span>
+        <div class="tp-text">
+          <div class="tp-label" style="color:var(--gold2)">Continue</div>
+          <div class="tp-desc">Create or join a room</div>
+        </div>
+      </button>
+      <button class="theme-play-btn" onclick="themePlayOnlineBack()" style="border-color:rgba(255,255,255,.1);margin-top:4px">
+        <span class="tp-icon">←</span>
+        <div class="tp-text">
+          <div class="tp-label" style="color:rgba(255,255,255,.5)">Back</div>
+        </div>
+      </button>
+    </div>
     <!-- Step 2: Create Room or Join Room (hidden initially) -->
     <div class="theme-online-options" id="tp-step2" style="display:none">
       <button class="theme-online-btn" onclick="themeCreateRoom()">
@@ -20612,7 +20747,7 @@ console.log('%c🔊 Audio System v35 loaded', 'background:#c8952a;color:#fff;pad
           <div class="tp-desc" id="tp-room-count">Browse available rooms</div>
         </div>
       </button>
-      <button class="theme-play-btn" onclick="themePlayOnlineBack()" style="border-color:rgba(255,255,255,.1);margin-top:4px">
+      <button class="theme-play-btn" onclick="themeStep2Back()" style="border-color:rgba(255,255,255,.1);margin-top:4px">
         <span class="tp-icon">←</span>
         <div class="tp-text">
           <div class="tp-label" style="color:rgba(255,255,255,.5)">Back</div>
