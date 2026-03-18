@@ -4175,13 +4175,8 @@ body.popup-active .tok-emoji-ring{opacity:0!important;pointer-events:none!import
     <div class="scr-header-line"></div>
   </div>
 
-  <!-- Action buttons top -->
-  <div id="sr-create-btn-row" style="display:flex;gap:8px;width:100%;max-width:420px;margin-bottom:12px">
-    <button class="btn btn-gold" style="flex:1" onclick="openCreateRoom()">➕ Create Room</button>
-  </div>
-  <div id="sr-theme-create-row" style="display:none;gap:8px;width:100%;max-width:420px;margin-bottom:12px">
-    <button class="btn btn-gold" style="flex:1" onclick="themeFilterCreateRoom()">➕ Create Room</button>
-  </div>
+  <!-- Dynamic create button injected by goRoom() when not in join-only mode -->
+  <div id="sr-create-btn-row" style="display:none;gap:8px;width:100%;max-width:420px;margin-bottom:12px"></div>
 
   <!-- Theme filter bar (shown when browsing from theme selection) -->
   <div id="room-theme-filter-bar" class="room-theme-filter" style="display:none">
@@ -8446,10 +8441,8 @@ function showThemePlayOverlay(t){
   // Reset to step 1
   var step1=document.getElementById('tp-step1');
   var stepMode=document.getElementById('tp-step-mode');
-  var step2=document.getElementById('tp-step2');
   if(step1) step1.style.display='';
   if(stepMode) stepMode.style.display='none';
-  if(step2) step2.style.display='none';
   _pendingPlayMode='casual';
   _roomBrowserJoinOnly=false;
   var sub=document.getElementById('tp-sub');
@@ -8476,25 +8469,25 @@ function themePlayLocal(){
 function themePlayOnline(){
   if(typeof SFX!=='undefined'&&SFX.play)SFX.play('click');
   _pendingPlayMode='casual';
-  // Switch to step 1.5: Mode selection
+  // Switch to merged mode + action step
   var step1=document.getElementById('tp-step1');
   var stepMode=document.getElementById('tp-step-mode');
+  var step2=document.getElementById('tp-step2');
   if(step1) step1.style.display='none';
   if(stepMode) stepMode.style.display='';
+  if(step2) step2.style.display='none';
   var sub=document.getElementById('tp-sub');
-  if(sub) sub.textContent='Select game mode';
-  // Update mode card UI
+  if(sub) sub.textContent='Select mode & action';
   _updateThemeModeCards();
+  _updateThemeRoomCount();
 }
 
 function themePlayOnlineBack(){
   if(typeof SFX!=='undefined'&&SFX.play)SFX.play('click');
   var step1=document.getElementById('tp-step1');
   var stepMode=document.getElementById('tp-step-mode');
-  var step2=document.getElementById('tp-step2');
   if(step1) step1.style.display='';
   if(stepMode) stepMode.style.display='none';
-  if(step2) step2.style.display='none';
   var sub=document.getElementById('tp-sub');
   if(sub) sub.textContent='Choose how to play';
 }
@@ -8503,6 +8496,10 @@ function selectThemeMode(mode){
   if(typeof SFX!=='undefined'&&SFX.play)SFX.play('click');
   _pendingPlayMode=mode;
   _updateThemeModeCards();
+  // Update subtitle with selected mode info
+  var mc=MODE_CONFIG[mode]||MODE_CONFIG.casual;
+  var sub=document.getElementById('tp-sub');
+  if(sub) sub.textContent=mc.label+' Mode · '+(mc.entryFee>0?'Ⓔ '+mc.entryFee.toLocaleString()+' entry':'Free entry');
 }
 
 function _updateThemeModeCards(){
@@ -8523,27 +8520,7 @@ function _updateThemeModeCards(){
   }
 }
 
-function themeModeContinue(){
-  if(typeof SFX!=='undefined'&&SFX.play)SFX.play('click');
-  var stepMode=document.getElementById('tp-step-mode');
-  var step2=document.getElementById('tp-step2');
-  if(stepMode) stepMode.style.display='none';
-  if(step2) step2.style.display='';
-  var sub=document.getElementById('tp-sub');
-  var mc=MODE_CONFIG[_pendingPlayMode]||MODE_CONFIG.casual;
-  if(sub) sub.textContent=mc.label+' Mode · '+(mc.entryFee>0?'Ⓔ '+mc.entryFee.toLocaleString()+' entry':'Free entry');
-  _updateThemeRoomCount();
-}
-
-function themeStep2Back(){
-  if(typeof SFX!=='undefined'&&SFX.play)SFX.play('click');
-  var stepMode=document.getElementById('tp-step-mode');
-  var step2=document.getElementById('tp-step2');
-  if(stepMode) stepMode.style.display='';
-  if(step2) step2.style.display='none';
-  var sub=document.getElementById('tp-sub');
-  if(sub) sub.textContent='Select game mode';
-}
+// themeModeContinue and themeStep2Back removed — mode + action now in single step
 
 function _updateThemeRoomCount(){
   // Check how many rooms exist for this theme
@@ -11414,14 +11391,20 @@ function shuf(a){for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*
 function sleep(ms){return new Promise(r=>setTimeout(r,ms))}
 function chOf(p){return CHARS.find(c=>c.id===p?.charId)||CHARS[0]}
 function clearRoomThemeFilter(){
+  var wasJoinOnly=_roomBrowserJoinOnly;
   _roomBrowserThemeFilter=null;
   _roomBrowserJoinOnly=false;
   var bar=document.getElementById('room-theme-filter-bar');
   if(bar) bar.style.display='none';
-  // Show create button row when filter is cleared
+  // Update header
+  var headerTitle=document.querySelector('#sr .scr-header-title');
+  if(headerTitle) headerTitle.innerHTML='🌐 Online Rooms';
+  // Show create button only if wasn't join-only
   var createBtnRow=document.getElementById('sr-create-btn-row');
-  if(createBtnRow) createBtnRow.style.display='flex';
-  // Refresh room list without filter
+  if(createBtnRow){
+    createBtnRow.style.display='flex';
+    createBtnRow.innerHTML='<button class="btn btn-gold" style="flex:1" onclick="openCreateRoom()">➕ Create Room</button>';
+  }
   RoomBrowser.refresh();
 }
 
@@ -11433,18 +11416,20 @@ function themeFilterCreateRoom(){
 
 function goRoom(){
   goScr('sr');
-  // Update header based on context
+  // Update header
   var headerTitle=document.querySelector('#sr .scr-header-title');
   if(headerTitle){
     if(_roomBrowserJoinOnly && _roomBrowserThemeFilter){
       var tn=(typeof THEME_LABELS!=='undefined'&&THEME_LABELS[_roomBrowserThemeFilter])||_roomBrowserThemeFilter||'';
-      var mc=MODE_CONFIG[_pendingPlayMode||'casual']||MODE_CONFIG.casual;
-      headerTitle.innerHTML='🔍 Join '+tn+' Room';
+      headerTitle.innerHTML='🔍 Join '+tn+' Rooms';
+    } else if(_roomBrowserThemeFilter){
+      var tn2=(typeof THEME_LABELS!=='undefined'&&THEME_LABELS[_roomBrowserThemeFilter])||_roomBrowserThemeFilter||'';
+      headerTitle.innerHTML='🌐 '+tn2+' Rooms';
     } else {
       headerTitle.innerHTML='🌐 Online Rooms';
     }
   }
-  // Show/hide theme filter bar
+  // Theme filter bar
   var filterBar=document.getElementById('room-theme-filter-bar');
   if(filterBar){
     if(_roomBrowserThemeFilter){
@@ -11457,19 +11442,18 @@ function goRoom(){
       filterBar.style.display='none';
     }
   }
-  // ALWAYS hide ALL create buttons when in join-only mode
+  // Create button — COMPLETELY HIDDEN in join-only mode, dynamically populated otherwise
   var createBtnRow=document.getElementById('sr-create-btn-row');
-  var themeCreateRow=document.getElementById('sr-theme-create-row');
-  if(_roomBrowserJoinOnly){
-    if(createBtnRow) createBtnRow.style.display='none';
-    if(themeCreateRow) themeCreateRow.style.display='none';
-  } else {
-    if(_roomBrowserThemeFilter){
-      if(createBtnRow) createBtnRow.style.display='none';
-      if(themeCreateRow) themeCreateRow.style.display='flex';
+  if(createBtnRow){
+    if(_roomBrowserJoinOnly){
+      createBtnRow.style.display='none';
+      createBtnRow.innerHTML='';
     } else {
-      if(createBtnRow) createBtnRow.style.display='flex';
-      if(themeCreateRow) themeCreateRow.style.display='none';
+      createBtnRow.style.display='flex';
+      var _themeLbl=(_roomBrowserThemeFilter&&typeof THEME_LABELS!=='undefined')?THEME_LABELS[_roomBrowserThemeFilter]:'';
+      var _createFn=_roomBrowserThemeFilter?'themeFilterCreateRoom()':'openCreateRoom()';
+      var _createLbl=_themeLbl?('➕ Create '+_themeLbl+' Room'):'➕ Create Room';
+      createBtnRow.innerHTML='<button class="btn btn-gold" style="flex:1" onclick="'+_createFn+'">'+_createLbl+'</button>';
     }
   }
   // Show login status
@@ -11777,15 +11761,11 @@ const RoomBrowser={
   },
   _renderList(){
     const el=document.getElementById('room-list');if(!el)return;
-    // Enforce create button visibility
+    // Enforce: hide create button in join-only mode
     var _cBtnRow=document.getElementById('sr-create-btn-row');
-    var _tBtnRow=document.getElementById('sr-theme-create-row');
-    if(_roomBrowserJoinOnly){
-      if(_cBtnRow)_cBtnRow.style.display='none';
-      if(_tBtnRow)_tBtnRow.style.display='none';
-    } else {
-      if(_cBtnRow)_cBtnRow.style.display=_roomBrowserThemeFilter?'none':'flex';
-      if(_tBtnRow)_tBtnRow.style.display=_roomBrowserThemeFilter?'flex':'none';
+    if(_cBtnRow && _roomBrowserJoinOnly){
+      _cBtnRow.style.display='none';
+      _cBtnRow.innerHTML='';
     }
     const entries=Object.entries(this._rooms).filter(([k,r])=>{
       if(!r||r.status!=='waiting')return false;
@@ -12057,7 +12037,7 @@ const Rm={
       if(mc.entryFee>0){const curBal=getECoinBalance();setECoinBalance(curBal+mc.entryFee);}
       toast(i18n('roomFull')||'Room penuh atau kamu sudah ada di room ini!');roomCode='';myId='';return;
     }
-    db.ref(`${fbp(code)}/players/${myId}`).onDisconnect().remove();
+    db.ref(`${fbp(code)}/players/${myId}/online`).onDisconnect().set(false);
     // CRITICAL FIX: Force joining player to use the same theme as host
     // Without this, each player uses their own local theme → different BOARD arrays
     // → inconsistent property names, prices, rent amounts during gameplay
@@ -12314,7 +12294,7 @@ const Rm={
                   toast('⚠️ Host left permanently. Entry fee Ⓔ'+closeMc.entryFee.toLocaleString()+' refunded');
                 }else toast('⚠️ Host disconnected — game ended');
                 Rm._cancelCountdown();LobbyChat.stop();
-                localP=[];roomCode='';_roomBrowserThemeFilter=null;RoomBrowser.stop();goScr('sr');RoomBrowser.start();
+                localP=[];roomCode='';_roomBrowserThemeFilter=null;_roomBrowserJoinOnly=false;RoomBrowser.stop();goScr('sr');RoomBrowser.start();
               }
               // else: host reconnected and room is back — stay in game silently
             }).catch(()=>{});
@@ -12330,7 +12310,7 @@ const Rm={
         }
         this._cancelCountdown();
         LobbyChat.stop();
-        localP=[];roomCode='';
+        localP=[];roomCode='';_roomBrowserJoinOnly=false;
         RoomBrowser.stop();goScr('sr');RoomBrowser.start();
       }
       return;
@@ -12351,6 +12331,18 @@ const Rm={
         db.ref(fbp(roomCode)+'/hostOnline').onDisconnect().set(false);
       }
     }
+    // FIX: Reconnect non-host player if their entry was removed by brief disconnect
+    if(!isHost&&myId&&d.players&&!d.players[myId]&&d.status==='waiting'&&db&&roomCode){
+      // Try to re-add ourselves — we're still in the lobby
+      var _rprof2=loadProfile();
+      var _rnm2=_rprof2.fullName||(_rprof2.name&&_rprof2.name!=='Player'?_rprof2.name:'Player');
+      var _ruid2=currentUser?currentUser.uid:null;
+      var _readdMe={id:myId,name:_rnm2,isHost:false,isBot:false,charId:localP.find(function(p){return p.id===myId})?localP.find(function(p){return p.id===myId}).charId:null,uid:_ruid2,ready:false,online:true};
+      db.ref(fbp(roomCode)+'/players/'+myId).set(_readdMe).then(function(){
+        db.ref(fbp(roomCode)+'/players/'+myId+'/online').onDisconnect().set(false);
+      }).catch(function(){});
+      return;
+    }
     if(!isHost&&myId&&d.players&&!d.players[myId]&&!_activeGameRunning){
       // Refund entry fee when kicked
       const kickMc=MODE_CONFIG[d.gameMode||gameMode||'casual']||MODE_CONFIG.casual;
@@ -12364,7 +12356,7 @@ const Rm={
       this._cancelCountdown();
       try{db.ref(`${fbp(roomCode)}`).off();}catch(e){}
       LobbyChat.stop();
-      localP=[];roomCode='';
+      localP=[];roomCode='';_roomBrowserJoinOnly=false;
       RoomBrowser.stop();goScr('sr');RoomBrowser.start();
       return;
     }
@@ -20698,23 +20690,24 @@ console.log('%c🔊 Audio System v35 loaded', 'background:#c8952a;color:#fff;pad
     <!-- Step 1: Play Local or Play Online -->
     <div class="theme-play-options" id="tp-step1">
       <button class="theme-play-btn" onclick="themePlayLocal()">
-        <span class="tp-icon">🤖</span>
+        <span class="tp-icon">🎮</span>
         <div class="tp-text">
-          <div class="tp-label" data-i18n="playLocal">Play vs Bot</div>
-          <div class="tp-desc">Offline · 2-4 Players</div>
+          <div class="tp-label">Play Local</div>
+          <div class="tp-desc">Offline · vs Bot · 2-4 Players</div>
         </div>
       </button>
       <button class="theme-play-btn" onclick="themePlayOnline()">
         <span class="tp-icon">🌐</span>
         <div class="tp-text">
-          <div class="tp-label" data-i18n="startGame">Play Online</div>
+          <div class="tp-label">Play Online</div>
           <div class="tp-desc">Multiplayer · Create or Join Room</div>
         </div>
       </button>
     </div>
-    <!-- Step 1.5: Select Game Mode (Casual / Business / Tycoon) -->
+    <!-- Step 2: Select Mode + Create/Join (merged, no Continue step) -->
     <div class="theme-online-options" id="tp-step-mode" style="display:none">
-      <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-bottom:10px">
+      <div style="font-size:11px;color:rgba(255,255,255,.5);text-align:center;margin-bottom:6px;letter-spacing:1px;text-transform:uppercase">Select Mode</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-bottom:8px">
         <div class="tp-mode-card selected" data-mode="casual" onclick="selectThemeMode('casual')">
           <div style="font-size:22px">🎯</div>
           <div style="font-weight:700;font-size:12px">Casual</div>
@@ -20731,12 +20724,19 @@ console.log('%c🔊 Audio System v35 loaded', 'background:#c8952a;color:#fff;pad
           <div style="font-size:9px;color:rgba(255,255,255,.5);line-height:1.3">Ⓔ 100K entry<br>All ×5!</div>
         </div>
       </div>
-      <div id="tp-fee-display" style="text-align:center;font-size:12px;font-weight:600;margin-bottom:10px;color:#4ade80">Entry Fee: FREE</div>
-      <button class="theme-online-btn" onclick="themeModeContinue()" style="border-color:rgba(200,149,42,.4);background:linear-gradient(135deg,rgba(200,149,42,.12),rgba(200,149,42,.04))">
-        <span class="tp-icon">→</span>
+      <div id="tp-fee-display" style="text-align:center;font-size:12px;font-weight:600;margin-bottom:12px;color:#4ade80">Entry Fee: FREE</div>
+      <button class="theme-online-btn" onclick="themeCreateRoom()" style="border-color:rgba(200,149,42,.4);background:linear-gradient(135deg,rgba(200,149,42,.12),rgba(200,149,42,.04))">
+        <span class="tp-icon">➕</span>
         <div class="tp-text">
-          <div class="tp-label" style="color:var(--gold2)">Continue</div>
-          <div class="tp-desc">Create or join a room</div>
+          <div class="tp-label" style="color:var(--gold2)">Create Room</div>
+          <div class="tp-desc">Host a new game room</div>
+        </div>
+      </button>
+      <button class="theme-online-btn" onclick="themeJoinRoom()">
+        <span class="tp-icon">🔍</span>
+        <div class="tp-text">
+          <div class="tp-label">Join Room</div>
+          <div class="tp-desc" id="tp-room-count">Browse available rooms</div>
         </div>
       </button>
       <button class="theme-play-btn" onclick="themePlayOnlineBack()" style="border-color:rgba(255,255,255,.1);margin-top:4px">
@@ -20746,28 +20746,8 @@ console.log('%c🔊 Audio System v35 loaded', 'background:#c8952a;color:#fff;pad
         </div>
       </button>
     </div>
-    <!-- Step 2: Create Room or Join Room (hidden initially) -->
-    <div class="theme-online-options" id="tp-step2" style="display:none">
-      <button class="theme-online-btn" onclick="themeCreateRoom()">
-        <span class="tp-icon">➕</span>
-        <div class="tp-text">
-          <div class="tp-label" data-i18n="createRoom">Create Room</div>
-          <div class="tp-desc">Host a new game room</div>
-        </div>
-      </button>
-      <button class="theme-online-btn" onclick="themeJoinRoom()">
-        <span class="tp-icon">🔑</span>
-        <div class="tp-text">
-          <div class="tp-label" data-i18n="joinRoom">Join Room</div>
-          <div class="tp-desc" id="tp-room-count">Browse available rooms</div>
-        </div>
-      </button>
-      <button class="theme-play-btn" onclick="themeStep2Back()" style="border-color:rgba(255,255,255,.1);margin-top:4px">
-        <span class="tp-icon">←</span>
-        <div class="tp-text">
-          <div class="tp-label" style="color:rgba(255,255,255,.5)">Back</div>
-        </div>
-      </button>
+    <!-- tp-step2 kept as hidden placeholder for backward compat -->
+    <div id="tp-step2" style="display:none">
     </div>
     <button class="theme-play-cancel" onclick="closeThemePlayOverlay()">Cancel</button>
   </div>
