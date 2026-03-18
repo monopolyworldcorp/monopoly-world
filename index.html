@@ -4159,7 +4159,7 @@ body.popup-active .tok-emoji-ring{opacity:0!important;pointer-events:none!import
 
 <!-- ═══ ROOM BROWSER ═══ -->
 <div class="scr out" id="sr">
-  <button class="back" onclick="_roomBrowserThemeFilter=null;goScr('sm')">
+  <button class="back" onclick="_roomBrowserThemeFilter=null;RoomBrowser.stop();goScr('sm')">
     <span class="back-arrow">←</span>
     <span data-i18n="back">Back</span>
   </button>
@@ -4173,7 +4173,7 @@ body.popup-active .tok-emoji-ring{opacity:0!important;pointer-events:none!import
   </div>
 
   <!-- Action buttons top -->
-  <div style="display:flex;gap:8px;width:100%;max-width:420px;margin-bottom:12px">
+  <div id="sr-create-btn-row" style="display:flex;gap:8px;width:100%;max-width:420px;margin-bottom:12px">
     <button class="btn btn-gold" style="flex:1" onclick="openCreateRoom()">➕ Create Room</button>
     <button class="btn btn-outline" style="flex:1" onclick="openJoinByCode()">🔑 Join by Code</button>
   </div>
@@ -8410,22 +8410,32 @@ function _updateThemeRoomCount(){
   var desc=document.getElementById('tp-room-count');
   if(!desc) return;
   if(!db||!fbInit()){desc.textContent='Browse available rooms';return;}
-  db.ref('rooms').once('value',function(snap){
+  desc.textContent='Checking rooms...';
+  db.ref('rooms').once('value').then(function(snap){
     var allRooms=snap.val()||{};
     var count=0;
     Object.keys(allRooms).forEach(function(code){
-      var room=allRooms[code];
-      if(!room||room.status!=='waiting') return;
-      if(room.locked) return;
-      var pc=Object.keys(room.players||{}).length;
-      if(pc===0) return;
-      if(room.theme===_pendingPlayTheme) count++;
+      try{
+        var room=allRooms[code];
+        if(!room||room.status!=='waiting') return;
+        if(room.locked) return;
+        var pc=Object.keys(room.players||{}).length;
+        if(pc===0) return;
+        // Count rooms matching the selected theme
+        if(room.theme===_pendingPlayTheme) count++;
+      }catch(e){}
     });
     if(count>0){
       desc.textContent=count+' room'+(count>1?'s':'')+' available';
+      desc.style.color='#4ade80';
     } else {
       desc.textContent='No rooms yet — be the first!';
+      desc.style.color='';
     }
+  }).catch(function(err){
+    console.warn('Room count check failed:',err);
+    desc.textContent='Browse available rooms';
+    desc.style.color='';
   });
 }
 
@@ -8434,13 +8444,58 @@ function themeCreateRoom(){
   closeThemePlayOverlay();
   // Check sign-in
   if(!currentUser){toast('⚠️ Sign in required to create a room!');openProfilePopup();return;}
-  // Auto-create room with the selected theme using casual mode
+  // Check Firebase
+  if(!fbInit()){toast('❌ Server connection failed. Please try again.');return;}
+  // Create room directly with the selected theme
+  var prof=loadProfile();
+  var nm=prof.fullName||(prof.name&&prof.name!=='Player'?prof.name:'Player');
+  if(!nm||nm==='Player'){toast('⚠️ Please set your name in profile first!');openProfilePopup();return;}
+  var themeName=(typeof THEME_LABELS!=='undefined'&&THEME_LABELS[_pendingPlayTheme])||_pendingPlayTheme||'Classic';
+  var rn=nm+"'s "+themeName+' Room';
+  // Set room parameters
   _crMode='casual';_crLocked=false;_crReqMode='any';
-  // Set the create room name
-  var crName=document.getElementById('cr-name');
-  if(crName) crName.value=loadProfile().name+"'s Room";
-  // Trigger room creation directly
-  Rm.create();
+  gameMode='casual';roomLocked=false;maxP=4;roomName=rn;
+  roomCode=genCode();isHost=true;
+  myId='p_'+Date.now();
+  var uid=currentUser.uid;
+  localP=[{id:myId,name:nm,isHost:true,isBot:false,charId:null,uid:uid,ready:false}];
+  var mc=MODE_CONFIG[gameMode]||MODE_CONFIG.casual;
+  // Check & deduct entry fee
+  if(mc.entryFee>0){
+    var bal=getECoinBalance();
+    if(bal<mc.entryFee){toast('❌ Insufficient E Coins! Need Ⓔ'+mc.entryFee.toLocaleString());return;}
+    setECoinBalance(bal-mc.entryFee);
+    toast('💰 Entry fee Ⓔ'+mc.entryFee.toLocaleString()+' deducted');
+  }
+  localP[0].entryPaid=mc.entryFee||0;
+  // Build room data with explicit theme
+  var roomData={
+    host:myId,hostUid:currentUser.uid,hostName:nm,
+    maxPlayers:maxP,status:'waiting',
+    gameMode:gameMode,roomName:roomName,locked:roomLocked,
+    players:{[myId]:localP[0]},
+    entryFeePerPlayer:mc.entryFee||0,
+    theme:_pendingPlayTheme||currentTheme,
+    createdAt:firebase.database.ServerValue.TIMESTAMP
+  };
+  // Write to Firebase
+  fbSet(roomCode,roomData).then(function(){
+    fbListen(roomCode,function(d){Rm._upd(d);});
+    db.ref(fbp(roomCode)+'/players/'+myId).onDisconnect().remove();
+    if(isHost) db.ref(fbp(roomCode)).onDisconnect().remove();
+    Rm._render();Rm._renderLobbyInfo();goScr('sw');
+    var lcp=document.getElementById('lobby-chat-panel');if(lcp)lcp.style.display='block';
+    if(typeof LobbyChat!=='undefined')LobbyChat.start();
+    toast('✅ Room created! Share code: '+roomCode);
+  }).catch(function(err){
+    console.error('Room creation failed:',err);
+    toast('❌ Failed to create room. Please try again.');
+    // Refund entry fee on failure
+    if(mc.entryFee>0){
+      setECoinBalance(getECoinBalance()+mc.entryFee);
+      toast('💰 Entry fee refunded');
+    }
+  });
 }
 
 function themeJoinRoom(){
@@ -8448,8 +8503,12 @@ function themeJoinRoom(){
   closeThemePlayOverlay();
   // Check sign-in
   if(!currentUser){toast('⚠️ Sign in required to play online!');openProfilePopup();return;}
+  // Check Firebase connection first
+  if(!fbInit()){toast('❌ Server connection failed. Check your internet.');return;}
   // Set theme filter for room browser
   _roomBrowserThemeFilter=_pendingPlayTheme;
+  // Ensure RoomBrowser is stopped before restarting (prevent listener leaks)
+  RoomBrowser.stop();
   // Navigate to room browser
   goRoom();
 }
@@ -9223,8 +9282,7 @@ function applyI18n(){
   // Update specific dynamic elements
   const broll=$('broll'); if(broll) broll.textContent=i18n('rollDice');
   const bend=$('bend'); if(bend) bend.textContent=i18n('endTurn');
-  const cta=document.querySelector('.sm-cta span:first-child');
-  if(cta) cta.textContent=i18n('startGame');
+  // Old CTA removed - theme buttons now handle play mode directly
   const langBtns=document.querySelectorAll('.lang-btn');
   langBtns.forEach(b=>b.classList.toggle('active',b.dataset.lang===currentLang));
   const arBtns=document.querySelectorAll('.ar-btn');
@@ -11174,6 +11232,10 @@ function clearRoomThemeFilter(){
   _roomBrowserThemeFilter=null;
   var bar=document.getElementById('room-theme-filter-bar');
   if(bar) bar.style.display='none';
+  // Show create button row when filter is cleared
+  var createBtnRow=document.getElementById('sr-create-btn-row');
+  if(createBtnRow) createBtnRow.style.display='flex';
+  // Refresh room list without filter
   RoomBrowser.refresh();
 }
 
@@ -11185,13 +11247,20 @@ function goRoom(){
     if(_roomBrowserThemeFilter){
       filterBar.style.display='flex';
       var label=document.getElementById('rtf-label');
-      if(label) label.innerHTML='🎯 Showing rooms for: <strong>'+(THEME_LABELS[_roomBrowserThemeFilter]||_roomBrowserThemeFilter)+'</strong>';
+      var themeName=(typeof THEME_LABELS!=='undefined'&&THEME_LABELS[_roomBrowserThemeFilter])||_roomBrowserThemeFilter||'';
+      if(label) label.innerHTML='🎯 Showing <strong>'+themeName+'</strong> rooms';
     } else {
       filterBar.style.display='none';
     }
   }
+  // Show/hide create button based on context
+  var createBtnRow=document.getElementById('sr-create-btn-row');
+  if(createBtnRow){
+    // If coming from theme selection, hide standalone create (they already chose theme)
+    createBtnRow.style.display=_roomBrowserThemeFilter?'none':'flex';
+  }
   // Update login status on room screen
-  const loginStatus = document.getElementById('room-login-status');
+  var loginStatus=document.getElementById('room-login-status');
   if(loginStatus){
     if(currentUser){
       loginStatus.style.display='block';
@@ -11207,6 +11276,8 @@ function goRoom(){
       loginStatus.innerHTML='⚠️ Sign in required for online play — <span style="color:var(--gold2);cursor:pointer;text-decoration:underline" onclick="openProfilePopup()">Sign In</span>';
     }
   }
+  // Always stop before restart to prevent listener leaks
+  RoomBrowser.stop();
   // Start browsing rooms
   RoomBrowser.start();
 }
@@ -11285,38 +11356,79 @@ function setReqMode(mode){
 const RoomBrowser={
   _ref:null, _rooms:{},
   start(){
-    if(!fbInit())return;
+    // Always stop existing listener first to prevent leaks
+    this.stop();
+    if(!db||!fbInit()){
+      this._rooms={};
+      this._renderList();
+      return;
+    }
+    // Do initial fetch
     this.refresh();
-    // Listen for ALL room changes, filter locally — no server-side index needed
-    if(this._ref)try{this._ref.off();}catch(e){}
+    // Set up realtime listener for ALL room changes
     this._ref=db.ref('rooms');
     this._ref.on('value',snap=>{
-      const allRooms=snap.val()||{};
+      try{
+        const allRooms=snap.val()||{};
+        this._rooms={};
+        Object.entries(allRooms).forEach(([code,room])=>{
+          if(!room||room.status!=='waiting')return;
+          // Auto-delete stale rooms (older than 2 hours with no updates)
+          if(room._lastUpdate && (Date.now()-room._lastUpdate>7200000)){
+            db.ref('rooms/'+code).remove().catch(()=>{});
+            return;
+          }
+          // Auto-delete ghost rooms (waiting but 0 real players)
+          const pc=Object.keys(room.players||{}).length;
+          if(pc===0){db.ref('rooms/'+code).remove().catch(()=>{});return;}
+          this._rooms[code]=room;
+        });
+        this._renderList();
+      }catch(e){
+        console.warn('RoomBrowser data error:',e);
+        this._rooms={};
+        this._renderList();
+      }
+    },err=>{
+      console.warn('RoomBrowser listener error:',err);
       this._rooms={};
-      Object.entries(allRooms).forEach(([code,room])=>{
-        if(!room||room.status!=='waiting')return;
-        // Auto-delete ghost rooms (waiting but 0 real players)
-        const pc=Object.keys(room.players||{}).length;
-        if(pc===0){db.ref('rooms/'+code).remove().catch(()=>{});return;}
-        this._rooms[code]=room;
-      });
       this._renderList();
-    },err=>{console.warn('RoomBrowser error:',err);this._renderList();});
+      // Auto-retry after 3 seconds on error
+      setTimeout(()=>{
+        if(document.getElementById('sr')&&!document.getElementById('sr').classList.contains('out')){
+          this.start();
+        }
+      },3000);
+    });
   },
   stop(){
     if(this._ref){this._ref.off();this._ref=null;}
   },
   refresh(){
-    if(!db||!fbInit()){this._renderList();return;}
-    db.ref('rooms').once('value',snap=>{
-      const allRooms=snap.val()||{};
+    if(!db||!fbInit()){this._rooms={};this._renderList();return;}
+    db.ref('rooms').once('value').then(snap=>{
+      try{
+        const allRooms=snap.val()||{};
+        this._rooms={};
+        Object.entries(allRooms).forEach(([code,room])=>{
+          if(!room||room.status!=='waiting')return;
+          if(room._lastUpdate && (Date.now()-room._lastUpdate>7200000)){
+            db.ref('rooms/'+code).remove().catch(()=>{});
+            return;
+          }
+          const pc=Object.keys(room.players||{}).length;
+          if(pc===0){db.ref('rooms/'+code).remove().catch(()=>{});return;}
+          this._rooms[code]=room;
+        });
+        this._renderList();
+      }catch(e){
+        console.warn('RoomBrowser refresh error:',e);
+        this._rooms={};
+        this._renderList();
+      }
+    }).catch(err=>{
+      console.warn('RoomBrowser refresh failed:',err);
       this._rooms={};
-      Object.entries(allRooms).forEach(([code,room])=>{
-        if(!room||room.status!=='waiting')return;
-        const pc=Object.keys(room.players||{}).length;
-        if(pc===0){db.ref('rooms/'+code).remove().catch(()=>{});return;}
-        this._rooms[code]=room;
-      });
       this._renderList();
     });
   },
@@ -11334,7 +11446,12 @@ const RoomBrowser={
       return true;
     });
     if(!entries.length){
-      el.innerHTML='<div class="room-empty-state"><div class="empty-icon">🏜️</div>No rooms available right now<br><span style="font-size:10px;opacity:.6">Create one and invite friends!</span></div>';
+      if(_roomBrowserThemeFilter){
+        var tn=(typeof THEME_LABELS!=='undefined'&&THEME_LABELS[_roomBrowserThemeFilter])||_roomBrowserThemeFilter;
+        el.innerHTML='<div class="room-empty-state"><div class="empty-icon">🏜️</div>No <strong>'+tn+'</strong> rooms right now<br><span style="font-size:10px;opacity:.6">Go back and create one!</span></div>';
+      } else {
+        el.innerHTML='<div class="room-empty-state"><div class="empty-icon">🏜️</div>No rooms available right now<br><span style="font-size:10px;opacity:.6">Create one and invite friends!</span></div>';
+      }
       return;
     }
     el.innerHTML='';
@@ -11451,17 +11568,18 @@ const Rm={
       setECoinBalance(bal - mc.entryFee);
       toast('💰 Entry fee Ⓔ'+mc.entryFee.toLocaleString()+' deducted');
     }
-    if(!fbInit()){openOv('o-fb');return}
+    if(!fbInit()){toast('❌ Server connection failed. Please try again.');return}
     try{
       // Track entry fee payments for refund on cancel
-      localP[0].entryPaid=mc.entryFee;
+      localP[0].entryPaid=mc.entryFee||0;
       const roomData={
         host:myId,hostUid:currentUser.uid,hostName:nm,
         maxPlayers:maxP,status:'waiting',
         gameMode:gameMode,roomName:roomName,locked:roomLocked,
         players:{[myId]:localP[0]},
-        entryFeePerPlayer:mc.entryFee,
-        theme:currentTheme
+        entryFeePerPlayer:mc.entryFee||0,
+        theme:currentTheme||'nusantara',
+        createdAt:firebase.database.ServerValue.TIMESTAMP
       };
       if(Object.keys(reqs).length>0)roomData.requirements=reqs;
       await fbSet(roomCode,roomData);
@@ -11469,7 +11587,16 @@ const Rm={
       db.ref(`${fbp(roomCode)}/players/${myId}`).onDisconnect().remove();
       // FIX: Host disconnect in lobby should clean up the entire room
       if(isHost) db.ref(fbp(roomCode)).onDisconnect().remove();
-    }catch(e){openOv('o-fb');return}
+    }catch(e){
+      console.error('Room create error:',e);
+      toast('❌ Failed to create room: '+(e.message||'Unknown error'));
+      // Refund entry fee on failure
+      if(mc.entryFee>0){
+        setECoinBalance(getECoinBalance()+mc.entryFee);
+        toast('💰 Entry fee refunded');
+      }
+      return;
+    }
     closeOv('o-create-room');
     this._render();this._renderLobbyInfo();goScr('sw');
     const lcp=document.getElementById('lobby-chat-panel');if(lcp)lcp.style.display='block';
@@ -11479,9 +11606,18 @@ const Rm={
     if(!currentUser){toast('⚠️ Sign in required!');openProfilePopup();return;}
     const prof=loadProfile();
     const nm=prof.fullName||(prof.name&&prof.name!=='Player'?prof.name:'Player');
-    if(!fbInit()){toast(i18n('firebaseNotSetup'));return}
+    if(!fbInit()){toast('❌ Server connection failed. Please try again.');return}
     let snap,d;
-    try{snap=await db.ref(fbp(code)).once('value');d=snap.val();}catch(e){toast('❌ Tidak dapat terhubung ke server. Periksa koneksi Anda.');return;}
+    try{
+      // Add timeout for Firebase read
+      const timeoutPromise=new Promise((_,reject)=>setTimeout(()=>reject(new Error('Connection timeout')),10000));
+      snap=await Promise.race([db.ref(fbp(code)).once('value'),timeoutPromise]);
+      d=snap.val();
+    }catch(e){
+      console.warn('Join room error:',e);
+      toast('❌ Cannot connect to server. Please check your connection.');
+      return;
+    }
     if(!d){toast(i18n('roomNotFound'));return}
     if(d.status!=='waiting'){toast(i18n('gameStarted'));return}
     if(Object.keys(d.players||{}).length>=(d.maxPlayers||4)){toast(i18n('roomFull'));return}
@@ -11802,7 +11938,7 @@ const Rm={
                   toast('⚠️ Host left permanently. Entry fee Ⓔ'+closeMc.entryFee.toLocaleString()+' refunded');
                 }else toast('⚠️ Host disconnected — game ended');
                 Rm._cancelCountdown();LobbyChat.stop();
-                localP=[];roomCode='';goScr('sr');RoomBrowser.start();
+                localP=[];roomCode='';_roomBrowserThemeFilter=null;RoomBrowser.stop();goScr('sr');RoomBrowser.start();
               }
               // else: host reconnected and room is back — stay in game silently
             }).catch(()=>{});
@@ -11819,7 +11955,7 @@ const Rm={
         this._cancelCountdown();
         LobbyChat.stop();
         localP=[];roomCode='';
-        goScr('sr');RoomBrowser.start();
+        RoomBrowser.stop();goScr('sr');RoomBrowser.start();
       }
       return;
     }
@@ -11851,7 +11987,7 @@ const Rm={
       try{db.ref(`${fbp(roomCode)}`).off();}catch(e){}
       LobbyChat.stop();
       localP=[];roomCode='';
-      goScr('sr');RoomBrowser.start();
+      RoomBrowser.stop();goScr('sr');RoomBrowser.start();
       return;
     }
     maxP=d.maxPlayers||4;
