@@ -4159,7 +4159,7 @@ body.popup-active .tok-emoji-ring{opacity:0!important;pointer-events:none!import
 
 <!-- ═══ ROOM BROWSER ═══ -->
 <div class="scr out" id="sr">
-  <button class="back" onclick="_roomBrowserThemeFilter=null;RoomBrowser.stop();goScr('sm')">
+  <button class="back" onclick="_roomBrowserThemeFilter=null;RoomBrowser.stop();var _cb=document.getElementById('sr-create-btn-row');if(_cb)_cb.style.display='flex';goScr('sm')">
     <span class="back-arrow">←</span>
     <span data-i18n="back">Back</span>
   </button>
@@ -5939,13 +5939,49 @@ function authInit(){
 function _setupAuthStateListener(){
   firebase.auth().onAuthStateChanged(function(user){
     currentUser=user;
+    // Resolve auth readiness on first fire
+    if(!_authIsResolved){
+      _authIsResolved=true;
+      if(_authReadyResolve)_authReadyResolve(user);
+    }
+    // Cache auth state for instant UI restoration on next page load
+    try{
+      localStorage.setItem('_mw_hasAuth',user?'1':'0');
+      if(user)localStorage.setItem('_mw_authName',user.displayName||user.email||'');
+      else localStorage.removeItem('_mw_authName');
+    }catch(e){}
     if(user){ _onAuthSuccess(user); setTimeout(checkInvites, 1500); setTimeout(startFriendRequestListener, 2000); }
     else { if(typeof stopFriendRequestListener==='function')stopFriendRequestListener(); }
     refreshProfileUI();
+    // Refresh room browser if it's currently active (auth state may affect visibility)
+    try{
+      var srScr=document.getElementById('sr');
+      if(srScr&&!srScr.classList.contains('out')){
+        RoomBrowser.stop();RoomBrowser.start();
+      }
+    }catch(e){}
   });
 }
 // Auto-init auth when page loads
 try{ authInit(); }catch(e){}
+
+// One-time cleanup of orphan rooms in Firebase (rooms without status field from local play bug)
+try{
+  setTimeout(function(){
+    if(!db&&fbInit()){}
+    if(db){
+      db.ref('rooms').once('value').then(function(snap){
+        var rooms=snap.val()||{};
+        Object.entries(rooms).forEach(function(entry){
+          var code=entry[0],room=entry[1];
+          if(!room||!room.status){
+            db.ref('rooms/'+code).remove().catch(function(){});
+          }
+        });
+      }).catch(function(){});
+    }
+  },3000);
+}catch(e){}
 
 function profileLogin(provider){
   // Real Firebase Auth
@@ -6124,6 +6160,7 @@ function profileSignOut(){
   if(db&&currentUser){try{db.ref('users/'+currentUser.uid+'/online').set(false);}catch(e){}}
   firebase.auth().signOut().then(()=>{
     currentUser=null;
+    try{localStorage.setItem('_mw_hasAuth','0');localStorage.removeItem('_mw_authName');}catch(e){}
     // Reset ALL local profile data on sign-out (data lives in cloud)
     _profileSessionRestored = false;
     const fresh = _defaultProfile();
@@ -8439,10 +8476,14 @@ function _updateThemeRoomCount(){
   });
 }
 
-function themeCreateRoom(){
+async function themeCreateRoom(){
   if(typeof SFX!=='undefined'&&SFX.play)SFX.play('click');
   closeThemePlayOverlay();
-  // Check sign-in
+  // Wait for auth to fully resolve before checking login status
+  if(!_authIsResolved){
+    toast('⏳ Checking login status...');
+    await Promise.race([waitForAuth(),new Promise(function(r){setTimeout(r,4000)})]);
+  }
   if(!currentUser){toast('⚠️ Sign in required to create a room!');openProfilePopup();return;}
   // Check Firebase
   if(!fbInit()){toast('❌ Server connection failed. Please try again.');return;}
@@ -8498,10 +8539,14 @@ function themeCreateRoom(){
   });
 }
 
-function themeJoinRoom(){
+async function themeJoinRoom(){
   if(typeof SFX!=='undefined'&&SFX.play)SFX.play('click');
   closeThemePlayOverlay();
-  // Check sign-in
+  // Wait for auth to fully resolve
+  if(!_authIsResolved){
+    toast('⏳ Checking login status...');
+    await Promise.race([waitForAuth(),new Promise(function(r){setTimeout(r,4000)})]);
+  }
   if(!currentUser){toast('⚠️ Sign in required to play online!');openProfilePopup();return;}
   // Check Firebase connection first
   if(!fbInit()){toast('❌ Server connection failed. Check your internet.');return;}
@@ -10196,6 +10241,22 @@ let gameMode='casual'; // 'casual' | 'business' | 'tycoon'
 let roomName=''; // Multiplayer room display name
 let roomLocked=false; // true = private room, false = public
 let currentUser=null; // Firebase auth user
+// ── Auth Readiness System ──
+var _authReadyResolve=null;
+var _authReadyPromise=new Promise(function(r){_authReadyResolve=r;});
+var _authIsResolved=false;
+function waitForAuth(){
+  if(_authIsResolved)return Promise.resolve(currentUser);
+  return _authReadyPromise;
+}
+// Instant UI restoration from localStorage
+try{
+  var _cachedAuth=localStorage.getItem('_mw_hasAuth');
+  if(_cachedAuth==='1'){
+    // User was previously logged in - don't show login prompts until auth resolves
+    var _fastAuthName=localStorage.getItem('_mw_authName')||'';
+  }
+}catch(e){}
 let localP=[], roomCode='', isHost=false, maxP=4;
 let db=null, aucTmr=null, aucD=null, trPend=null;
 let csSel=null, csQ=[], csQi=0;
@@ -11256,35 +11317,58 @@ function goRoom(){
   // Show/hide create button based on context
   var createBtnRow=document.getElementById('sr-create-btn-row');
   if(createBtnRow){
-    // If coming from theme selection, hide standalone create (they already chose theme)
     createBtnRow.style.display=_roomBrowserThemeFilter?'none':'flex';
   }
-  // Update login status on room screen
+  // Update login status on room screen - auth-aware
   var loginStatus=document.getElementById('room-login-status');
   if(loginStatus){
-    if(currentUser){
+    if(!_authIsResolved){
+      // Auth still loading
+      loginStatus.style.display='block';
+      loginStatus.style.background='rgba(200,149,42,.08)';
+      loginStatus.style.border='1px solid rgba(200,149,42,.2)';
+      loginStatus.style.color='var(--gold2)';
+      loginStatus.innerHTML='⏳ Verifying login status...';
+      // Update once auth resolves
+      waitForAuth().then(function(){
+        if(currentUser){
+          loginStatus.style.background='rgba(34,197,94,.08)';
+          loginStatus.style.border='1px solid rgba(34,197,94,.2)';
+          loginStatus.style.color='#4ade80';
+          loginStatus.innerHTML='✓ Signed in as <strong>'+(loadProfile().name||currentUser.email)+'</strong>';
+        } else {
+          loginStatus.style.background='rgba(239,68,68,.08)';
+          loginStatus.style.border='1px solid rgba(239,68,68,.2)';
+          loginStatus.style.color='#fca5a5';
+          loginStatus.innerHTML='⚠️ Sign in required — <span style="color:var(--gold2);cursor:pointer;text-decoration:underline" onclick="openProfilePopup()">Sign In</span>';
+        }
+      });
+    } else if(currentUser){
       loginStatus.style.display='block';
       loginStatus.style.background='rgba(34,197,94,.08)';
       loginStatus.style.border='1px solid rgba(34,197,94,.2)';
       loginStatus.style.color='#4ade80';
-      loginStatus.innerHTML='✓ Signed in as <strong>'+loadProfile().name+'</strong>';
+      loginStatus.innerHTML='✓ Signed in as <strong>'+(loadProfile().name||currentUser.email)+'</strong>';
     } else {
       loginStatus.style.display='block';
       loginStatus.style.background='rgba(239,68,68,.08)';
       loginStatus.style.border='1px solid rgba(239,68,68,.2)';
       loginStatus.style.color='#fca5a5';
-      loginStatus.innerHTML='⚠️ Sign in required for online play — <span style="color:var(--gold2);cursor:pointer;text-decoration:underline" onclick="openProfilePopup()">Sign In</span>';
+      loginStatus.innerHTML='⚠️ Sign in required — <span style="color:var(--gold2);cursor:pointer;text-decoration:underline" onclick="openProfilePopup()">Sign In</span>';
     }
   }
   // Always stop before restart to prevent listener leaks
   RoomBrowser.stop();
-  // Start browsing rooms
   RoomBrowser.start();
 }
 
 // ═══ CREATE ROOM HELPERS ═══
 let _crMode='casual', _crLocked=false, _crReqMode='any';
-function openCreateRoom(){
+async function openCreateRoom(){
+  if(!_authIsResolved){
+    toast('⏳ Checking login status...');
+    await Promise.race([waitForAuth(),new Promise(function(r){setTimeout(r,4000)})]);
+  }
   if(!currentUser){toast('⚠️ Sign in required to create a room!');openProfilePopup();return;}
   _crMode='casual';_crLocked=false;_crReqMode='any';
   document.querySelectorAll('.mode-card').forEach(c=>c.classList.toggle('selected',c.dataset.mode==='casual'));
@@ -11302,7 +11386,11 @@ function openCreateRoom(){
   if(crName)crName.value=loadProfile().name+"'s Room";
   openOv('o-create-room');
 }
-function openJoinByCode(){
+async function openJoinByCode(){
+  if(!_authIsResolved){
+    toast('⏳ Checking login status...');
+    await Promise.race([waitForAuth(),new Promise(function(r){setTimeout(r,4000)})]);
+  }
   if(!currentUser){toast('⚠️ Sign in required to play online!');openProfilePopup();return;}
   openOv('o-join-code');
 }
@@ -11363,8 +11451,9 @@ const RoomBrowser={
       this._renderList();
       return;
     }
-    // Do initial fetch
-    this.refresh();
+    // Show searching state
+    var el=document.getElementById('room-list');
+    if(el)el.innerHTML='<div style="text-align:center;color:var(--txt3);font-size:12px;padding:20px 0">🔍 Searching for rooms...</div>';
     // Set up realtime listener for ALL room changes
     this._ref=db.ref('rooms');
     this._ref.on('value',snap=>{
@@ -11372,9 +11461,15 @@ const RoomBrowser={
         const allRooms=snap.val()||{};
         this._rooms={};
         Object.entries(allRooms).forEach(([code,room])=>{
-          if(!room||room.status!=='waiting')return;
+          if(!room)return;
+          // Clean up orphan rooms (no status field = created by local play bug)
+          if(!room.status){
+            try{db.ref('rooms/'+code).remove().catch(()=>{});}catch(e){}
+            return;
+          }
+          if(room.status!=='waiting')return;
           // Auto-delete stale rooms (older than 2 hours with no updates)
-          if(room._lastUpdate && (Date.now()-room._lastUpdate>7200000)){
+          if(room._lastUpdate && typeof room._lastUpdate==='number' && (Date.now()-room._lastUpdate>7200000)){
             db.ref('rooms/'+code).remove().catch(()=>{});
             return;
           }
@@ -11392,13 +11487,15 @@ const RoomBrowser={
     },err=>{
       console.warn('RoomBrowser listener error:',err);
       this._rooms={};
-      this._renderList();
-      // Auto-retry after 3 seconds on error
+      var el=document.getElementById('room-list');
+      if(el)el.innerHTML='<div style="text-align:center;color:#fca5a5;font-size:12px;padding:20px 0">⚠️ Connection issue.<br><span style="color:var(--gold2);cursor:pointer;text-decoration:underline" onclick="RoomBrowser.stop();RoomBrowser.start()">🔄 Tap to retry</span></div>';
+      // Auto-retry after 5 seconds on error
       setTimeout(()=>{
-        if(document.getElementById('sr')&&!document.getElementById('sr').classList.contains('out')){
-          this.start();
-        }
-      },3000);
+        try{
+          var sr=document.getElementById('sr');
+          if(sr&&!sr.classList.contains('out'))this.start();
+        }catch(e){}
+      },5000);
     });
   },
   stop(){
@@ -11411,8 +11508,14 @@ const RoomBrowser={
         const allRooms=snap.val()||{};
         this._rooms={};
         Object.entries(allRooms).forEach(([code,room])=>{
-          if(!room||room.status!=='waiting')return;
-          if(room._lastUpdate && (Date.now()-room._lastUpdate>7200000)){
+          if(!room)return;
+          // Clean orphan rooms (no status = ghost from local play)
+          if(!room.status){
+            try{db.ref('rooms/'+code).remove().catch(()=>{});}catch(e){}
+            return;
+          }
+          if(room.status!=='waiting')return;
+          if(room._lastUpdate && typeof room._lastUpdate==='number' && (Date.now()-room._lastUpdate>7200000)){
             db.ref('rooms/'+code).remove().catch(()=>{});
             return;
           }
@@ -11434,6 +11537,9 @@ const RoomBrowser={
   },
   _renderList(){
     const el=document.getElementById('room-list');if(!el)return;
+    // Always enforce create button visibility based on theme filter context
+    var _cBtnRow=document.getElementById('sr-create-btn-row');
+    if(_cBtnRow)_cBtnRow.style.display=_roomBrowserThemeFilter?'none':'flex';
     const entries=Object.entries(this._rooms).filter(([k,r])=>{
       if(!r||r.status!=='waiting')return false;
       // Don't show locked rooms in public list
@@ -11578,7 +11684,7 @@ const Rm={
         gameMode:gameMode,roomName:roomName,locked:roomLocked,
         players:{[myId]:localP[0]},
         entryFeePerPlayer:mc.entryFee||0,
-        theme:currentTheme||'nusantara',
+        theme:_pendingPlayTheme||currentTheme||'nusantara',
         createdAt:firebase.database.ServerValue.TIMESTAMP
       };
       if(Object.keys(reqs).length>0)roomData.requirements=reqs;
@@ -11821,7 +11927,7 @@ const Rm={
     }else{
       // Cancel ready & clear token
       me.ready=false;me.charId=null;
-      if(db&&roomCode){
+      if(db&&roomCode&&!offline){
         await db.ref(`${fbp(roomCode)}/players/${myId}/ready`).set(false);
         await db.ref(`${fbp(roomCode)}/players/${myId}/charId`).set(null);
       }
@@ -12237,7 +12343,7 @@ const Rm={
     const me=localP.find(p=>p.id===myId);
     if(me){
       me.ready=false;me.charId=null;
-      if(db&&roomCode){
+      if(db&&roomCode&&!offline){
         db.ref(`${fbp(roomCode)}/players/${myId}/ready`).set(false);
         db.ref(`${fbp(roomCode)}/players/${myId}/charId`).set(null);
       }
@@ -12353,7 +12459,7 @@ const LobbyToken={
     if(!me)return;
     me.charId=this._sel;
     me.ready=true;
-    if(db&&roomCode){
+    if(db&&roomCode&&!offline){
       await db.ref(`${fbp(roomCode)}/players/${myId}/charId`).set(this._sel);
       await db.ref(`${fbp(roomCode)}/players/${myId}/ready`).set(true);
     }
@@ -12457,7 +12563,7 @@ const CharSel={
   async ok(){
     if(!csSel)return;
     const p=csQ[csQi];p.charId=csSel;
-    if(db&&roomCode)await db.ref(`${fbp(roomCode)}/players/${p.id}/charId`).set(csSel);
+    if(db&&roomCode&&!offline)await db.ref(`${fbp(roomCode)}/players/${p.id}/charId`).set(csSel);
     localP.find(lp=>lp.id===p.id).charId=csSel;
     csQi++;if(csQi>=csQ.length)this._fin();else this._render();
     // If next picker is a bot, auto-pick
