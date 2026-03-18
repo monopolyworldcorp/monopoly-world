@@ -4175,7 +4175,6 @@ body.popup-active .tok-emoji-ring{opacity:0!important;pointer-events:none!import
   <!-- Action buttons top -->
   <div id="sr-create-btn-row" style="display:flex;gap:8px;width:100%;max-width:420px;margin-bottom:12px">
     <button class="btn btn-gold" style="flex:1" onclick="openCreateRoom()">➕ Create Room</button>
-    <button class="btn btn-outline" style="flex:1" onclick="openJoinByCode()">🔑 Join by Code</button>
   </div>
 
   <!-- Theme filter bar (shown when browsing from theme selection) -->
@@ -4279,20 +4278,22 @@ body.popup-active .tok-emoji-ring{opacity:0!important;pointer-events:none!import
   </div>
 </div>
 
-<!-- ═══ JOIN BY CODE OVERLAY ═══ -->
-<div class="ov" id="o-join-code" onclick="if(event.target===this)closeOv('o-join-code')">
-  <div class="ov-box" style="max-width:360px;padding:24px">
+<!-- ═══ INVITE PLAYER OVERLAY ═══ -->
+<div class="ov" id="o-invite-player" onclick="if(event.target===this)closeOv('o-invite-player')">
+  <div class="ov-box" style="max-width:400px;padding:24px">
     <div class="phead" style="margin-bottom:14px">
-      <span class="phead-icon">🔑</span>
-      <span>Join by Code</span>
+      <span class="phead-icon">🎮</span>
+      <span>Invite Player</span>
       <span class="phead-divider"></span>
     </div>
     <div class="fld">
-      <label>Room Code</label>
-      <input class="inp" id="rjc" placeholder="· · · · · ·" maxlength="6"
-        style="text-align:center;letter-spacing:10px;font-size:24px;font-family:'Bebas Neue',sans-serif;text-transform:uppercase;padding:14px 16px">
+      <label>Search by Username</label>
+      <input class="inp" id="invite-search-input" placeholder="Type a username..." maxlength="30"
+        style="font-size:14px;padding:12px 16px" oninput="searchPlayersToInvite(this.value)">
     </div>
-    <button class="btn btn-gold" style="margin-top:10px;width:100%" onclick="Rm.joinByCode()">Join →</button>
+    <div id="invite-search-results" style="max-height:250px;overflow-y:auto;margin-top:10px;display:flex;flex-direction:column;gap:6px">
+      <div style="text-align:center;color:var(--txt3);font-size:12px;padding:16px 0">Type a username to search for players</div>
+    </div>
   </div>
 </div>
 
@@ -4320,10 +4321,9 @@ body.popup-active .tok-emoji-ring{opacity:0!important;pointer-events:none!import
             <div style="font-size:10px;color:var(--txt3)" id="wmode-label">Casual · Free entry</div>
           </div>
         </div>
-        <div class="codebox-mini" onclick="Rm.copy()" style="cursor:pointer;padding:4px 10px;border-radius:6px;background:rgba(200,149,42,.08);border:1px solid rgba(200,149,42,.2)">
-          <span style="font-family:'Bebas Neue';font-size:13px;letter-spacing:3px;color:var(--gold2)" id="wcode">──────</span>
-          <span style="font-size:8px;color:var(--txt3);margin-left:4px">📋</span>
-        </div>
+        <button onclick="openInvitePlayer()" style="padding:6px 14px;border-radius:8px;background:linear-gradient(135deg,rgba(34,197,94,.15),rgba(34,197,94,.08));border:1px solid rgba(34,197,94,.3);color:#4ade80;font-size:12px;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:4px">
+          <span>🎮</span> <span>Invite</span>
+        </button>
       </div>
     </div>
 
@@ -5944,20 +5944,58 @@ function _setupAuthStateListener(){
       _authIsResolved=true;
       if(_authReadyResolve)_authReadyResolve(user);
     }
-    // Cache auth state for instant UI restoration on next page load
+    // Robust auth caching - store everything needed for instant restoration
     try{
-      localStorage.setItem('_mw_hasAuth',user?'1':'0');
-      if(user)localStorage.setItem('_mw_authName',user.displayName||user.email||'');
-      else localStorage.removeItem('_mw_authName');
+      if(user){
+        localStorage.setItem('_mw_hasAuth','1');
+        localStorage.setItem('_mw_authUid',user.uid);
+        localStorage.setItem('_mw_authName',user.displayName||user.email||'');
+        localStorage.setItem('_mw_authEmail',user.email||'');
+        localStorage.setItem('_mw_authTs',Date.now().toString());
+      } else {
+        // Only clear auth cache if this is a deliberate sign-out (not a transient state)
+        // Check if we recently had auth - if so, this might be a false negative
+        var lastTs=parseInt(localStorage.getItem('_mw_authTs')||'0');
+        if(Date.now()-lastTs>5000){
+          // More than 5 seconds since last auth - this is a real sign-out
+          localStorage.removeItem('_mw_hasAuth');
+          localStorage.removeItem('_mw_authUid');
+          localStorage.removeItem('_mw_authName');
+          localStorage.removeItem('_mw_authEmail');
+          localStorage.removeItem('_mw_authTs');
+        } else {
+          // Recent auth existed - might be transient, try token refresh
+          console.log('Auth state flicker detected, attempting token refresh...');
+          try{
+            firebase.auth().currentUser&&firebase.auth().currentUser.getIdToken(true).catch(function(){});
+          }catch(e){}
+        }
+      }
     }catch(e){}
     if(user){ _onAuthSuccess(user); setTimeout(checkInvites, 1500); setTimeout(startFriendRequestListener, 2000); }
     else { if(typeof stopFriendRequestListener==='function')stopFriendRequestListener(); }
     refreshProfileUI();
-    // Refresh room browser if it's currently active (auth state may affect visibility)
+    // Update room browser login status if visible
     try{
       var srScr=document.getElementById('sr');
       if(srScr&&!srScr.classList.contains('out')){
-        RoomBrowser.stop();RoomBrowser.start();
+        var ls=document.getElementById('room-login-status');
+        if(ls){
+          if(user){
+            ls.style.display='block';
+            ls.style.background='rgba(34,197,94,.08)';
+            ls.style.border='1px solid rgba(34,197,94,.2)';
+            ls.style.color='#4ade80';
+            ls.innerHTML='✓ Signed in as <strong>'+(loadProfile().name||user.email)+'</strong>';
+          } else if(localStorage.getItem('_mw_hasAuth')==='1'){
+            // Had auth recently - show restoring
+            ls.style.display='block';
+            ls.style.background='rgba(200,149,42,.08)';
+            ls.style.border='1px solid rgba(200,149,42,.2)';
+            ls.style.color='var(--gold2)';
+            ls.innerHTML='⏳ Restoring session...';
+          }
+        }
       }
     }catch(e){}
   });
@@ -6160,7 +6198,7 @@ function profileSignOut(){
   if(db&&currentUser){try{db.ref('users/'+currentUser.uid+'/online').set(false);}catch(e){}}
   firebase.auth().signOut().then(()=>{
     currentUser=null;
-    try{localStorage.setItem('_mw_hasAuth','0');localStorage.removeItem('_mw_authName');}catch(e){}
+    try{localStorage.removeItem('_mw_hasAuth');localStorage.removeItem('_mw_authUid');localStorage.removeItem('_mw_authName');localStorage.removeItem('_mw_authEmail');localStorage.removeItem('_mw_authTs');}catch(e){}
     // Reset ALL local profile data on sign-out (data lives in cloud)
     _profileSessionRestored = false;
     const fresh = _defaultProfile();
@@ -8479,13 +8517,21 @@ function _updateThemeRoomCount(){
 async function themeCreateRoom(){
   if(typeof SFX!=='undefined'&&SFX.play)SFX.play('click');
   closeThemePlayOverlay();
-  // Wait for auth to fully resolve before checking login status
+  // Wait for auth if not resolved yet (max 6 seconds)
   if(!_authIsResolved){
-    toast('⏳ Checking login status...');
-    await Promise.race([waitForAuth(),new Promise(function(r){setTimeout(r,4000)})]);
+    await Promise.race([waitForAuth(),new Promise(function(r){setTimeout(r,6000)})]);
   }
-  if(!currentUser){toast('⚠️ Sign in required to create a room!');openProfilePopup();return;}
-  // Check Firebase
+  // Double-check: try to get current user from Firebase
+  if(!currentUser) currentUser=firebase.auth().currentUser;
+  if(!currentUser){
+    // Last resort: check localStorage cache
+    if(localStorage.getItem('_mw_hasAuth')==='1'){
+      toast('⏳ Restoring session...');
+      await new Promise(function(r){setTimeout(r,2000)});
+      currentUser=firebase.auth().currentUser;
+    }
+    if(!currentUser){toast('⚠️ Sign in required to create a room!');openProfilePopup();return;}
+  }
   if(!fbInit()){toast('❌ Server connection failed. Please try again.');return;}
   // Create room directly with the selected theme
   var prof=loadProfile();
@@ -8523,14 +8569,28 @@ async function themeCreateRoom(){
   fbSet(roomCode,roomData).then(function(){
     fbListen(roomCode,function(d){Rm._upd(d);});
     db.ref(fbp(roomCode)+'/players/'+myId).onDisconnect().remove();
-    if(isHost) db.ref(fbp(roomCode)).onDisconnect().remove();
+    // Room-level: mark host as offline instead of deleting entire room
+    db.ref(fbp(roomCode)+'/hostOnline').set(true);
+    db.ref(fbp(roomCode)+'/hostOnline').onDisconnect().set(false);
+    // Start host heartbeat
+    Rm._startHeartbeat();
     Rm._render();Rm._renderLobbyInfo();goScr('sw');
     var lcp=document.getElementById('lobby-chat-panel');if(lcp)lcp.style.display='block';
     if(typeof LobbyChat!=='undefined')LobbyChat.start();
-    toast('✅ Room created! Share code: '+roomCode);
+    // Verify room was actually written to Firebase
+    db.ref(fbp(roomCode)).once('value').then(function(vSnap){
+      if(!vSnap.val()){
+        console.error('Room verification failed - room not found after write!');
+        toast('⚠️ Room sync issue - retrying...');
+        fbSet(roomCode,roomData).catch(function(){});
+      } else {
+        console.log('✅ Room verified in Firebase:', roomCode, vSnap.val().theme);
+      }
+    }).catch(function(){});
+    toast('✅ Room created!');
   }).catch(function(err){
     console.error('Room creation failed:',err);
-    toast('❌ Failed to create room. Please try again.');
+    toast('❌ Failed to create room: '+(err.message||'Please try again.'));
     // Refund entry fee on failure
     if(mc.entryFee>0){
       setECoinBalance(getECoinBalance()+mc.entryFee);
@@ -8542,13 +8602,19 @@ async function themeCreateRoom(){
 async function themeJoinRoom(){
   if(typeof SFX!=='undefined'&&SFX.play)SFX.play('click');
   closeThemePlayOverlay();
-  // Wait for auth to fully resolve
+  // Wait for auth if not resolved yet (max 6 seconds)
   if(!_authIsResolved){
-    toast('⏳ Checking login status...');
-    await Promise.race([waitForAuth(),new Promise(function(r){setTimeout(r,4000)})]);
+    await Promise.race([waitForAuth(),new Promise(function(r){setTimeout(r,6000)})]);
   }
-  if(!currentUser){toast('⚠️ Sign in required to play online!');openProfilePopup();return;}
-  // Check Firebase connection first
+  if(!currentUser) currentUser=firebase.auth().currentUser;
+  if(!currentUser){
+    if(localStorage.getItem('_mw_hasAuth')==='1'){
+      toast('⏳ Restoring session...');
+      await new Promise(function(r){setTimeout(r,2000)});
+      currentUser=firebase.auth().currentUser;
+    }
+    if(!currentUser){toast('⚠️ Sign in required to play online!');openProfilePopup();return;}
+  }
   if(!fbInit()){toast('❌ Server connection failed. Check your internet.');return;}
   // Set theme filter for room browser
   _roomBrowserThemeFilter=_pendingPlayTheme;
@@ -11319,36 +11385,27 @@ function goRoom(){
   if(createBtnRow){
     createBtnRow.style.display=_roomBrowserThemeFilter?'none':'flex';
   }
-  // Update login status on room screen - auth-aware
+  // Show login status
   var loginStatus=document.getElementById('room-login-status');
   if(loginStatus){
-    if(!_authIsResolved){
-      // Auth still loading
-      loginStatus.style.display='block';
-      loginStatus.style.background='rgba(200,149,42,.08)';
-      loginStatus.style.border='1px solid rgba(200,149,42,.2)';
-      loginStatus.style.color='var(--gold2)';
-      loginStatus.innerHTML='⏳ Verifying login status...';
-      // Update once auth resolves
-      waitForAuth().then(function(){
-        if(currentUser){
-          loginStatus.style.background='rgba(34,197,94,.08)';
-          loginStatus.style.border='1px solid rgba(34,197,94,.2)';
-          loginStatus.style.color='#4ade80';
-          loginStatus.innerHTML='✓ Signed in as <strong>'+(loadProfile().name||currentUser.email)+'</strong>';
-        } else {
-          loginStatus.style.background='rgba(239,68,68,.08)';
-          loginStatus.style.border='1px solid rgba(239,68,68,.2)';
-          loginStatus.style.color='#fca5a5';
-          loginStatus.innerHTML='⚠️ Sign in required — <span style="color:var(--gold2);cursor:pointer;text-decoration:underline" onclick="openProfilePopup()">Sign In</span>';
-        }
-      });
-    } else if(currentUser){
+    // Always check the actual Firebase auth state AND localStorage cache
+    var _u=currentUser||firebase.auth().currentUser;
+    var _hasCachedAuth=localStorage.getItem('_mw_hasAuth')==='1';
+    if(_u){
       loginStatus.style.display='block';
       loginStatus.style.background='rgba(34,197,94,.08)';
       loginStatus.style.border='1px solid rgba(34,197,94,.2)';
       loginStatus.style.color='#4ade80';
-      loginStatus.innerHTML='✓ Signed in as <strong>'+(loadProfile().name||currentUser.email)+'</strong>';
+      loginStatus.innerHTML='✓ Signed in as <strong>'+(loadProfile().name||_u.email)+'</strong>';
+      if(!currentUser)currentUser=_u;
+    } else if(_hasCachedAuth){
+      // Had auth recently - likely restoring
+      var _cachedName=localStorage.getItem('_mw_authName')||'';
+      loginStatus.style.display='block';
+      loginStatus.style.background='rgba(34,197,94,.08)';
+      loginStatus.style.border='1px solid rgba(34,197,94,.15)';
+      loginStatus.style.color='#86efac';
+      loginStatus.innerHTML='✓ Signed in as <strong>'+(_cachedName||'...')+'</strong>';
     } else {
       loginStatus.style.display='block';
       loginStatus.style.background='rgba(239,68,68,.08)';
@@ -11366,9 +11423,9 @@ function goRoom(){
 let _crMode='casual', _crLocked=false, _crReqMode='any';
 async function openCreateRoom(){
   if(!_authIsResolved){
-    toast('⏳ Checking login status...');
-    await Promise.race([waitForAuth(),new Promise(function(r){setTimeout(r,4000)})]);
+    await Promise.race([waitForAuth(),new Promise(function(r){setTimeout(r,6000)})]);
   }
+  if(!currentUser) currentUser=firebase.auth().currentUser;
   if(!currentUser){toast('⚠️ Sign in required to create a room!');openProfilePopup();return;}
   _crMode='casual';_crLocked=false;_crReqMode='any';
   document.querySelectorAll('.mode-card').forEach(c=>c.classList.toggle('selected',c.dataset.mode==='casual'));
@@ -11386,13 +11443,78 @@ async function openCreateRoom(){
   if(crName)crName.value=loadProfile().name+"'s Room";
   openOv('o-create-room');
 }
-async function openJoinByCode(){
-  if(!_authIsResolved){
-    toast('⏳ Checking login status...');
-    await Promise.race([waitForAuth(),new Promise(function(r){setTimeout(r,4000)})]);
+function openInvitePlayer(){
+  if(!currentUser){toast('⚠️ Sign in required!');openProfilePopup();return;}
+  if(!roomCode){toast('Join or create a room first');return;}
+  var input=document.getElementById('invite-search-input');
+  if(input)input.value='';
+  var results=document.getElementById('invite-search-results');
+  if(results)results.innerHTML='<div style="text-align:center;color:var(--txt3);font-size:12px;padding:16px 0">Type a username to search for players</div>';
+  openOv('o-invite-player');
+}
+var _inviteSearchTimeout=null;
+function searchPlayersToInvite(query){
+  clearTimeout(_inviteSearchTimeout);
+  var results=document.getElementById('invite-search-results');
+  if(!results)return;
+  query=(query||'').trim().toLowerCase();
+  if(query.length<2){
+    results.innerHTML='<div style="text-align:center;color:var(--txt3);font-size:12px;padding:16px 0">'+(query.length===0?'Type a username to search':'Type at least 2 characters')+'</div>';
+    return;
   }
-  if(!currentUser){toast('⚠️ Sign in required to play online!');openProfilePopup();return;}
-  openOv('o-join-code');
+  results.innerHTML='<div style="text-align:center;color:var(--txt3);font-size:12px;padding:16px 0">🔍 Searching...</div>';
+  _inviteSearchTimeout=setTimeout(function(){
+    if(!db){results.innerHTML='<div style="text-align:center;color:#fca5a5;font-size:12px;padding:16px 0">❌ Not connected</div>';return;}
+    // Search usernames that start with query
+    db.ref('usernames').orderByKey().startAt(query).endAt(query+'\uf8ff').limitToFirst(10).once('value').then(function(snap){
+      var usernames=snap.val()||{};
+      var entries=Object.entries(usernames).filter(function(e){return e[1]!==currentUser.uid;});
+      if(entries.length===0){
+        results.innerHTML='<div style="text-align:center;color:var(--txt3);font-size:12px;padding:16px 0">No players found for "'+query+'"</div>';
+        return;
+      }
+      // Load user profiles for each result
+      Promise.all(entries.map(function(e){
+        return db.ref('users/'+e[1]).once('value').then(function(s){
+          return {username:e[0],uid:e[1],profile:s.val()||{}};
+        });
+      })).then(function(players){
+        results.innerHTML='';
+        players.forEach(function(p){
+          var div=document.createElement('div');
+          div.style.cssText='display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06)';
+          var name=p.profile.name||p.username;
+          var avatar=p.profile.avatar||'🎩';
+          var isOnline=p.profile.online===true;
+          var rating=p.profile.rating||0;
+          div.innerHTML='<div style="font-size:20px">'+avatar+'</div>'+
+            '<div style="flex:1"><div style="font-size:13px;font-weight:700;color:var(--txt1)">'+name.replace(/</g,'&lt;')+'</div>'+
+            '<div style="font-size:10px;color:var(--txt3)">@'+p.username.replace(/</g,'&lt;')+' · ⭐'+rating+(isOnline?' · <span style=color:#4ade80>● Online</span>':'')+'</div></div>'+
+            '<button onclick="sendGameInvite(\''+p.uid+'\',\''+name.replace(/'/g,"\\'")+'\');this.disabled=true;this.textContent=\'Sent ✓\';this.style.color=\'#4ade80\'" '+
+            'style="padding:6px 14px;border-radius:8px;background:linear-gradient(135deg,rgba(200,149,42,.2),rgba(200,149,42,.1));border:1px solid rgba(200,149,42,.3);color:var(--gold2);font-size:12px;font-weight:700;cursor:pointer">Invite</button>';
+          results.appendChild(div);
+        });
+      });
+    }).catch(function(err){
+      results.innerHTML='<div style="text-align:center;color:#fca5a5;font-size:12px;padding:16px 0">❌ Search failed: '+(err.message||'Unknown error')+'</div>';
+    });
+  },400);
+}
+function sendGameInvite(targetUid,targetName){
+  if(!currentUser||!roomCode){toast('❌ Cannot send invite');return;}
+  var prof=loadProfile();
+  db.ref('invites/'+targetUid+'/'+currentUser.uid).set({
+    fromName:prof.name||prof.fullName||'Player',
+    fromUid:currentUser.uid,
+    roomCode:roomCode,
+    roomName:roomName||'Room',
+    theme:_pendingPlayTheme||currentTheme||'nusantara',
+    timestamp:Date.now()
+  }).then(function(){
+    toast('🎮 Invite sent to '+targetName+'!');
+  }).catch(function(){
+    toast('❌ Failed to send invite');
+  });
 }
 function selectMode(m){
   _crMode=m;
@@ -11462,20 +11584,30 @@ const RoomBrowser={
         this._rooms={};
         Object.entries(allRooms).forEach(([code,room])=>{
           if(!room)return;
-          // Clean up orphan rooms (no status field = created by local play bug)
+          // Clean up orphan rooms (no status field = ghost from local play)
           if(!room.status){
             try{db.ref('rooms/'+code).remove().catch(()=>{});}catch(e){}
             return;
           }
           if(room.status!=='waiting')return;
-          // Auto-delete stale rooms (older than 2 hours with no updates)
-          if(room._lastUpdate && typeof room._lastUpdate==='number' && (Date.now()-room._lastUpdate>7200000)){
+          // Count HUMAN players (non-bot)
+          const players=room.players||{};
+          const allKeys=Object.keys(players);
+          const humanCount=allKeys.filter(k=>!players[k].isBot).length;
+          // If host is offline AND no humans left, clean up after 90 seconds
+          if(room.hostOnline===false && humanCount===0){
+            if(room.hostHeartbeat && typeof room.hostHeartbeat==='number' && (Date.now()-room.hostHeartbeat>90000)){
+              db.ref('rooms/'+code).remove().catch(()=>{});
+            }
+            return;
+          }
+          // If total players is 0, skip (will be cleaned eventually)
+          if(allKeys.length===0)return;
+          // Stale room check: no heartbeat update for 5 minutes
+          if(room.hostHeartbeat && typeof room.hostHeartbeat==='number' && (Date.now()-room.hostHeartbeat>300000)){
             db.ref('rooms/'+code).remove().catch(()=>{});
             return;
           }
-          // Auto-delete ghost rooms (waiting but 0 real players)
-          const pc=Object.keys(room.players||{}).length;
-          if(pc===0){db.ref('rooms/'+code).remove().catch(()=>{});return;}
           this._rooms[code]=room;
         });
         this._renderList();
@@ -11488,14 +11620,14 @@ const RoomBrowser={
       console.warn('RoomBrowser listener error:',err);
       this._rooms={};
       var el=document.getElementById('room-list');
-      if(el)el.innerHTML='<div style="text-align:center;color:#fca5a5;font-size:12px;padding:20px 0">⚠️ Connection issue.<br><span style="color:var(--gold2);cursor:pointer;text-decoration:underline" onclick="RoomBrowser.stop();RoomBrowser.start()">🔄 Tap to retry</span></div>';
-      // Auto-retry after 5 seconds on error
+      if(el)el.innerHTML='<div style="text-align:center;color:#fca5a5;font-size:12px;padding:20px 0">⚠️ Failed to load rooms: '+(err.message||'Unknown error')+'<br><span style="color:var(--gold2);cursor:pointer;text-decoration:underline" onclick="RoomBrowser.stop();RoomBrowser.start()">🔄 Tap to retry</span></div>';
+      // Auto-retry after 3 seconds
       setTimeout(()=>{
         try{
           var sr=document.getElementById('sr');
           if(sr&&!sr.classList.contains('out'))this.start();
         }catch(e){}
-      },5000);
+      },3000);
     });
   },
   stop(){
@@ -11509,18 +11641,22 @@ const RoomBrowser={
         this._rooms={};
         Object.entries(allRooms).forEach(([code,room])=>{
           if(!room)return;
-          // Clean orphan rooms (no status = ghost from local play)
-          if(!room.status){
-            try{db.ref('rooms/'+code).remove().catch(()=>{});}catch(e){}
+          if(!room.status){try{db.ref('rooms/'+code).remove().catch(()=>{});}catch(e){}return;}
+          if(room.status!=='waiting')return;
+          const players=room.players||{};
+          const allKeys=Object.keys(players);
+          const humanCount=allKeys.filter(k=>!players[k].isBot).length;
+          if(room.hostOnline===false && humanCount===0){
+            if(room.hostHeartbeat && typeof room.hostHeartbeat==='number' && (Date.now()-room.hostHeartbeat>90000)){
+              db.ref('rooms/'+code).remove().catch(()=>{});
+            }
             return;
           }
-          if(room.status!=='waiting')return;
-          if(room._lastUpdate && typeof room._lastUpdate==='number' && (Date.now()-room._lastUpdate>7200000)){
+          if(allKeys.length===0)return;
+          if(room.hostHeartbeat && typeof room.hostHeartbeat==='number' && (Date.now()-room.hostHeartbeat>300000)){
             db.ref('rooms/'+code).remove().catch(()=>{});
             return;
           }
-          const pc=Object.keys(room.players||{}).length;
-          if(pc===0){db.ref('rooms/'+code).remove().catch(()=>{});return;}
           this._rooms[code]=room;
         });
         this._renderList();
@@ -11641,6 +11777,23 @@ function genCode(){return Array.from({length:6},()=>'ABCDEFGHJKLMNPQRSTUVWXYZ234
 
 const Rm={
   _countdownTimer:null,_countdownVal:0,
+  _heartbeatTimer:null,
+  _startHeartbeat(){
+    this._stopHeartbeat();
+    // Update heartbeat immediately then every 25 seconds
+    if(db&&roomCode){
+      db.ref(fbp(roomCode)+'/hostHeartbeat').set(firebase.database.ServerValue.TIMESTAMP).catch(()=>{});
+    }
+    this._heartbeatTimer=setInterval(()=>{
+      if(db&&roomCode&&isHost){
+        db.ref(fbp(roomCode)+'/hostHeartbeat').set(firebase.database.ServerValue.TIMESTAMP).catch(()=>{});
+        db.ref(fbp(roomCode)+'/hostOnline').set(true).catch(()=>{});
+      }
+    },25000);
+  },
+  _stopHeartbeat(){
+    if(this._heartbeatTimer){clearInterval(this._heartbeatTimer);this._heartbeatTimer=null;}
+  },
   async create(){
     if(!currentUser){toast('⚠️ Sign in required!');openProfilePopup();return;}
     const prof=loadProfile();
@@ -11691,8 +11844,11 @@ const Rm={
       await fbSet(roomCode,roomData);
       fbListen(roomCode,d=>this._upd(d));
       db.ref(`${fbp(roomCode)}/players/${myId}`).onDisconnect().remove();
-      // FIX: Host disconnect in lobby should clean up the entire room
-      if(isHost) db.ref(fbp(roomCode)).onDisconnect().remove();
+      // Mark host as online with soft disconnect tracking
+      db.ref(fbp(roomCode)+'/hostOnline').set(true);
+      db.ref(fbp(roomCode)+'/hostOnline').onDisconnect().set(false);
+      // Start host heartbeat
+      Rm._startHeartbeat();
     }catch(e){
       console.error('Room create error:',e);
       toast('❌ Failed to create room: '+(e.message||'Unknown error'));
@@ -11796,16 +11952,12 @@ const Rm={
       toast('🌏 Tema disesuaikan dengan host: '+(THEMES[d.theme]?.name||d.theme));
     }
     fbListen(code,d2=>this._upd(d2));
-    closeOv('o-join-code');
+    closeOv('o-invite-player');
     this._render();this._renderLobbyInfo();goScr('sw');
     const lcp=document.getElementById('lobby-chat-panel');if(lcp)lcp.style.display='block';
     LobbyChat.start();
   },
-  async joinByCode(){
-    const code=(document.getElementById('rjc')?.value||'').trim().toUpperCase();
-    if(code.length!==6){toast(i18n('invalidCode'));return}
-    await this.joinRoom(code);
-  },
+  // joinByCode removed - using invite system instead
   confirmLeave(){
     const mc=MODE_CONFIG[gameMode]||MODE_CONFIG.casual;
     const fee=mc.entryFee||0;
@@ -11860,8 +12012,14 @@ const Rm={
     if(db&&roomCode&&myId){
       try{db.ref(`${fbp(roomCode)}/players/${myId}`).remove();}catch(e){}
       try{db.ref(`${fbp(roomCode)}`).off();}catch(e){}
-      if(isHost){try{db.ref(`${fbp(roomCode)}`).remove();}catch(e){}}
+      if(isHost){
+        // Cancel onDisconnect handlers before explicit deletion
+        try{db.ref(fbp(roomCode)+'/hostOnline').onDisconnect().cancel();}catch(e){}
+        try{db.ref(fbp(roomCode)+'/players/'+myId).onDisconnect().cancel();}catch(e){}
+        try{db.ref(`${fbp(roomCode)}`).remove();}catch(e){}
+      }
     }
+    Rm._stopHeartbeat();
     LobbyChat.stop();
     if(typeof GameChat!=='undefined'&&GameChat.stopFirebase)GameChat.stopFirebase();
     // FIX: Clean up multiplayer intervals
@@ -11935,10 +12093,7 @@ const Rm={
       this._render();
     }
   },
-  copy(){
-    navigator.clipboard?.writeText(roomCode).then(()=>toast(i18n('codeCopied'))).catch(()=>toast(i18n('roomCode')+': '+roomCode));
-    if(!navigator.clipboard)toast(i18n('roomCode')+': '+roomCode);
-  },
+  // copy() removed - using invite system instead
   _renderLobbyInfo(){
     const mc=MODE_CONFIG[gameMode]||MODE_CONFIG.casual;
     const iconEl=document.getElementById('wmode-icon');
@@ -11964,7 +12119,7 @@ const Rm={
     }
   },
   _render(){
-    $('wcode').textContent=roomCode;$('wcnt').textContent=localP.length;$('wmax').textContent=maxP;
+    $('wcnt').textContent=localP.length;$('wmax').textContent=maxP;
     const c=$('wplayers');c.innerHTML='';
     // Render each player slot
     localP.forEach(p=>{
@@ -12076,7 +12231,8 @@ const Rm={
         const _ruid=currentUser?currentUser.uid:null;
         db.ref(fbp(roomCode)+'/players/'+myId).set({id:myId,name:_rnm,isHost:true,isBot:false,charId:null,uid:_ruid,ready:false}).catch(()=>{});
         db.ref(fbp(roomCode)+'/players/'+myId).onDisconnect().remove();
-        db.ref(fbp(roomCode)).onDisconnect().remove();
+        db.ref(fbp(roomCode)+'/hostOnline').set(true);
+        db.ref(fbp(roomCode)+'/hostOnline').onDisconnect().set(false);
       }
     }
     if(!isHost&&myId&&d.players&&!d.players[myId]&&!_activeGameRunning){
@@ -12401,8 +12557,8 @@ const Rm={
   },
   async _doStart(){
     if(!isHost||localP.length<2)return;
-    // FIX: Cancel room-level onDisconnect so host disconnect during game doesn't delete room
-    if(db&&roomCode){try{db.ref(fbp(roomCode)).onDisconnect().cancel();}catch(e){}}
+    // Host online tracking cleanup
+    if(db&&roomCode){try{db.ref(fbp(roomCode)+'/hostOnline').onDisconnect().cancel();}catch(e){}}
     // All players already have tokens picked - go directly to game
     // Bots already have tokens from addBot
     // FIX: Build GS first, then write status+gs atomically.
