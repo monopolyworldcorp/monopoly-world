@@ -710,63 +710,44 @@ width:100%;
 }
 .topup-methods-id.visible{display:flex}
 .topup-id-toggle{
-  display:none;width:100%;margin:6px 0 0;padding:10px 16px;
-  border-radius:12px;border:1px solid rgba(255,255,255,0.1);
-  background:rgba(255,255,255,0.05);
-  color:rgba(255,255,255,0.6);font-size:13px;font-weight:600;cursor:pointer;
-  transition:all .25s ease;
+  display:none;width:100%;margin:16px 0 8px;padding:16px 20px;
+  border-radius:16px;border:2px solid rgba(220,38,38,0.4);
+  background:linear-gradient(135deg,#dc2626 0%,#b91c1c 50%,#991b1b 100%);
+  color:#fff;font-size:15px;font-weight:800;cursor:pointer;
+  transition:all .3s cubic-bezier(.22,1,.36,1);text-align:center;
+  letter-spacing:0.6px;font-family:'DM Sans',sans-serif;
   position:relative;overflow:hidden;
+  box-shadow:0 4px 20px rgba(220,38,38,0.3),inset 0 1px 0 rgba(255,255,255,0.15);
+  text-shadow:0 1px 3px rgba(0,0,0,0.3);
 }
-.topup-id-toggle:hover{background:rgba(255,255,255,0.09);border-color:rgba(255,255,255,0.22);color:rgba(255,255,255,0.9);}
-.topup-id-toggle:active{transform:scale(0.98)}
-.topup-id-toggle.visible{display:flex;align-items:center;justify-content:center;gap:8px}
+.topup-id-toggle::before{
+  content:'';position:absolute;inset:0;
+  background:linear-gradient(180deg,rgba(255,255,255,0.12) 0%,transparent 50%);
+  pointer-events:none;border-radius:14px;
+}
+.topup-id-toggle:hover{
+  transform:translateY(-2px);
+  box-shadow:0 6px 28px rgba(220,38,38,0.45),inset 0 1px 0 rgba(255,255,255,0.2);
+  border-color:rgba(248,113,113,0.6);
+}
+.topup-id-toggle:active{transform:scale(0.97)}
+.topup-id-toggle.visible{display:flex;align-items:center;justify-content:center;gap:10px}
+.topup-id-toggle .toggle-flag{font-size:22px;line-height:1}
 .topup-id-toggle .toggle-label{flex:1;text-align:center}
 .topup-id-toggle .toggle-chevron{
   display:inline-flex;align-items:center;justify-content:center;
-  width:18px;height:18px;border-radius:50%;
-  background:rgba(255,255,255,0.1);
-  font-size:11px;
+  width:24px;height:24px;border-radius:50%;
+  background:rgba(255,255,255,0.15);
+  transition:all .3s;font-size:11px;
 }
-/* Other Pay Methods popup */
-.other-pay-overlay{
-  position:fixed;inset:0;z-index:10001;
-  background:rgba(0,0,0,0.72);backdrop-filter:blur(14px);
-  display:none;align-items:center;justify-content:center;
-  animation:fadeIn .25s ease;
+.topup-id-toggle.expanded .toggle-chevron{transform:rotate(180deg);background:rgba(255,255,255,0.25)}
+.topup-id-toggle.expanded{
+  background:linear-gradient(135deg,#b91c1c 0%,#991b1b 50%,#7f1d1d 100%);
+  border-color:rgba(248,113,113,0.5);
+  border-bottom-left-radius:4px;border-bottom-right-radius:4px;
+  margin-bottom:0;
 }
-.other-pay-overlay.open{display:flex}
-.other-pay-modal{
-  width:min(380px,92vw);max-height:82vh;overflow-y:auto;overflow-x:hidden;
-  background:linear-gradient(170deg,#12080a 0%,#0d0610 40%,#080412 100%);
-  border:1px solid rgba(255,255,255,0.09);border-radius:22px;
-  padding:0;position:relative;
-  box-shadow:0 28px 70px rgba(0,0,0,0.85),0 0 0 1px rgba(255,255,255,0.03);
-  -webkit-overflow-scrolling:touch;
-}
-.other-pay-modal::before{
-  content:'';position:absolute;top:0;left:50%;transform:translateX(-50%);
-  width:100px;height:1px;
-  background:linear-gradient(90deg,transparent,rgba(255,255,255,0.13),transparent);
-}
-.other-pay-header{
-  text-align:center;padding:20px 24px 14px;position:relative;
-  border-bottom:1px solid rgba(255,255,255,0.05);
-}
-.other-pay-header h3{
-  font-size:17px;font-weight:700;color:rgba(255,255,255,0.88);
-  margin:0;letter-spacing:0.3px;
-}
-.other-pay-close{
-  position:absolute;top:14px;right:16px;
-  width:30px;height:30px;border-radius:10px;
-  border:1px solid rgba(255,255,255,0.08);
-  background:rgba(255,255,255,0.04);color:rgba(255,255,255,0.45);
-  font-size:16px;cursor:pointer;
-  display:flex;align-items:center;justify-content:center;
-  transition:all .2s;
-}
-.other-pay-close:hover{background:rgba(255,255,255,0.1);color:#fff;border-color:rgba(255,255,255,0.15);}
-.other-pay-body{padding:14px 16px 20px;display:flex;flex-direction:column;gap:10px}
+.topup-methods-id{border-top-left-radius:4px;border-top-right-radius:4px}
 .topup-id-category{
   width:100%;text-align:center;font-size:10px;letter-spacing:1.2px;
   text-transform:uppercase;color:rgba(255,255,255,0.35);margin-bottom:2px;
@@ -11243,20 +11224,32 @@ function syncCurrencyPickerUI(){
 }
 
 function updateIDPaymentMethods(){
+  const el = document.getElementById('topup-id-methods');
   const btn = document.getElementById('topup-id-toggle');
-  if(!btn) return;
-  // Always show the "Other Pay Methods" button
+  if(!el || !btn) return;
+  // IDR is now default - always show Indonesia payment toggle
+  // but auto-expand only for IDR
   btn.classList.add('visible');
+  if(_activeCurrency === 'IDR'){
+    btn.classList.add('expanded');
+    el.classList.add('visible');
+  } else {
+    btn.classList.remove('expanded');
+    el.classList.remove('visible');
+  }
 }
 
 function toggleIDMethods(){
-  const overlay = document.getElementById('other-pay-overlay');
-  if(overlay) overlay.classList.add('open');
-}
-
-function closeOtherPay(){
-  const overlay = document.getElementById('other-pay-overlay');
-  if(overlay) overlay.classList.remove('open');
+  const el = document.getElementById('topup-id-methods');
+  const btn = document.getElementById('topup-id-toggle');
+  if(!el || !btn) return;
+  const expanded = btn.classList.toggle('expanded');
+  if(expanded){
+    el.classList.add('visible');
+    el.scrollIntoView({behavior:'smooth',block:'nearest'});
+  } else {
+    el.classList.remove('visible');
+  }
 }
 
 function openTopUpShop(){
@@ -11904,19 +11897,19 @@ const Rm={
   _startPlayerHeartbeat(){
     this._stopPlayerHeartbeat();
     if(db&&roomCode&&myId){
-      db.ref(fbp(roomCode)+'/playerHeartbeats/'+myId).set(firebase.database.ServerValue.TIMESTAMP).catch(()=>{});
+      db.ref('playerHeartbeats/'+roomCode+'/'+myId).set(firebase.database.ServerValue.TIMESTAMP).catch(()=>{});
     }
     this._playerHBTimer=setInterval(()=>{
       if(db&&roomCode&&myId){
-        db.ref(fbp(roomCode)+'/playerHeartbeats/'+myId).set(firebase.database.ServerValue.TIMESTAMP).catch(()=>{});
+        db.ref('playerHeartbeats/'+roomCode+'/'+myId).set(firebase.database.ServerValue.TIMESTAMP).catch(()=>{});
       }
     },30000);
   },
   _stopPlayerHeartbeat(){
     if(this._playerHBTimer){clearInterval(this._playerHBTimer);this._playerHBTimer=null;}
-    // Clean up our heartbeat entry
+    // Clean up our heartbeat entry (stored outside room tree to avoid triggering room listener)
     if(db&&roomCode&&myId){
-      try{db.ref(fbp(roomCode)+'/playerHeartbeats/'+myId).remove();}catch(e){}
+      try{db.ref('playerHeartbeats/'+roomCode+'/'+myId).remove();}catch(e){}
     }
   },
   // ── AFK Detection (100 seconds = kick) ──
@@ -11925,7 +11918,7 @@ const Rm={
     if(this._afkChecker)clearInterval(this._afkChecker);
     this._afkChecker=setInterval(()=>{
       if(!isHost||!db||!roomCode)return;
-      db.ref(fbp(roomCode)+'/playerHeartbeats').once('value').then(snap=>{
+      db.ref('playerHeartbeats/'+roomCode).once('value').then(snap=>{
         const hbs=snap.val()||{};
         const now=Date.now();
         localP.forEach(p=>{
@@ -11937,7 +11930,7 @@ const Rm={
             toast('⏰ '+p.name+' kicked (AFK > 100s)');
             if(db&&roomCode){
               db.ref(fbp(roomCode)+'/players/'+p.id).remove().catch(()=>{});
-              db.ref(fbp(roomCode)+'/playerHeartbeats/'+p.id).remove().catch(()=>{});
+              db.ref('playerHeartbeats/'+roomCode+'/'+p.id).remove().catch(()=>{});
               db.ref('rooms/'+roomCode+'/lobbyChat').push({name:'System',msg:p.name+' was kicked (AFK)',sys:true,ts:Date.now()}).catch(()=>{});
             }
           }
@@ -12203,6 +12196,7 @@ const Rm={
           console.warn('Host transfer error:',e);
           // Fallback: delete room if transfer fails
           try{db.ref(`${fbp(roomCode)}`).remove();}catch(e2){}
+          try{db.ref('playerHeartbeats/'+roomCode).remove();}catch(e3){}
         }
       } else {
         // No other human players — delete room
@@ -12218,6 +12212,7 @@ const Rm={
           try{db.ref(fbp(roomCode)+'/hostOnline').onDisconnect().cancel();}catch(e){}
           try{db.ref(fbp(roomCode)+'/players/'+myId).onDisconnect().cancel();}catch(e){}
           try{db.ref(`${fbp(roomCode)}`).remove();}catch(e){}
+          try{db.ref('playerHeartbeats/'+roomCode).remove();}catch(e){}
         }
       }
     } else {
@@ -12515,6 +12510,7 @@ const Rm={
       const humanPlayers=allPlayers.filter(p=>!p.isBot);
       if(humanPlayers.length===0 && db && roomCode) {
         db.ref('rooms/'+roomCode).remove().catch(()=>{});
+        db.ref('playerHeartbeats/'+roomCode).remove().catch(()=>{});
         return;
       }
     }
@@ -12540,18 +12536,26 @@ const Rm={
         CGRP_NAME=THEMES[d.theme]?.CGRP_NAME||CGRP_NAME;
         GRP_CELLS=THEMES[d.theme]?.GRP_CELLS||GRP_CELLS;
       }
-      GS=d.gs;myIdx=GS.pls.findIndex(p=>p.id===myId);
-      // CRITICAL: Reset _busy on every remote GS update so buttons aren't stuck
-      G._busy=false;
-      // FIX: If myId not found (page refresh / reconnect), fall back to UID match
-      if(myIdx===-1&&currentUser){
-        const _byUid=GS.pls.findIndex(p=>p.uid===currentUser.uid);
-        if(_byUid>=0){myIdx=_byUid;myId=GS.pls[_byUid].id;}
-      }
-      // FIX: Cancel the player-level onDisconnect so brief disconnects don't
-      // remove player from d.players during an active game.
-      if(!alreadyInGame&&db&&roomCode&&myId&&!isHost){
-        try{db.ref(`${fbp(roomCode)}/players/${myId}`).onDisconnect().cancel();}catch(e){}
+      // ── GS VERSION CHECK ──
+      // Prevent stale Firebase echoes from overwriting newer local state.
+      // When the active player rolls/acts, local GS._v is stamped with Date.now().
+      // Heartbeat writes and other room changes trigger this listener with STALE gs
+      // (version from BEFORE the roll). Without this check, the stale echo overwrites
+      // local modifications (pos, money, dice), breaking popups, buys, and turns.
+      const _inV=d.gs._v||0,_myV=GS._v||0;
+      if(_inV>=_myV||!GS.pls||!GS.pls.length){
+        GS=d.gs;myIdx=GS.pls.findIndex(p=>p.id===myId);
+        G._busy=false;
+        // FIX: If myId not found (page refresh / reconnect), fall back to UID match
+        if(myIdx===-1&&currentUser){
+          const _byUid=GS.pls.findIndex(p=>p.uid===currentUser.uid);
+          if(_byUid>=0){myIdx=_byUid;myId=GS.pls[_byUid].id;}
+        }
+        // FIX: Cancel the player-level onDisconnect so brief disconnects don't
+        // remove player from d.players during an active game.
+        if(!alreadyInGame&&db&&roomCode&&myId&&!isHost){
+          try{db.ref(`${fbp(roomCode)}/players/${myId}`).onDisconnect().cancel();}catch(e){}
+        }
       }
       if(!alreadyInGame){
         // First transition — show themed loader
@@ -15524,7 +15528,7 @@ const G={
     const p=GS.pls[GS.cur];
     if(GS.rolled&&!(GS.dice[0]===GS.dice[1]))return;
     if(p.inJail){this._jailOpts();return}
-    this._busy=true;$('broll').disabled=true;$('bend').disabled=true;
+    this._busy=true;GS._v=Date.now();$('broll').disabled=true;$('bend').disabled=true;
     // FIX: Update turn timestamp as heartbeat (proves player is still connected)
     GS._turnStartTs=Date.now();
     try{
@@ -15613,7 +15617,7 @@ const G={
 
   _buyable(idx,cell){
     const pr=GS.props[cell.p];
-    if(!pr){if(idx===GS.cur)this._pModal(cell,idx,'buy');else{this._push();this.sync();}return}
+    if(!pr){if(idx===GS.cur){this._push();this._pModal(cell,idx,'buy');}else{this._push();this.sync();}return}
     if(pr.mortgaged||pr.owner===idx){this._push();this.sync();return}
     const ow=GS.pls[pr.owner];if(!ow||ow.bust){this._push();this.sync();return}
     const rent=this._rent(cell,pr);const och=chOf(ow);
@@ -16910,6 +16914,7 @@ const G={
     GS.rolled=false;GS.dc=0;// Reset double counter at end of turn (new turn starts fresh)
     GS._turnStartTs=Date.now(); // FIX: Track when this turn started for cross-client timeout
     this._busy=false;this._pendingCardLand=false;this._cardLandedGO=false;
+    GS._v=Date.now(); // Protect turn-change from stale echoes
     let nxt=(GS.cur+1)%GS.pls.length;let g=0;
     while(GS.pls[nxt].bust&&++g<GS.pls.length)nxt=(nxt+1)%GS.pls.length;
     GS.cur=nxt;updHUD();updStrip();
@@ -17380,6 +17385,7 @@ const G={
 
   _push(){
     if(offline||!db||!roomCode)return;
+    GS._v=Date.now(); // Version stamp for echo conflict resolution
     // FIX: Only push from the authoritative client:
     //  - It is my turn (current active player), OR
     //  - I am the host and current player is a bot (host manages bots), OR
@@ -20981,24 +20987,8 @@ console.log('%c🔊 Audio System v35 loaded', 'background:#c8952a;color:#fff;pad
           <span>Pay</span>
         </div>
       </div>
-      <div class="topup-id-toggle" id="topup-id-toggle" onclick="toggleIDMethods()"><span class="toggle-label">🌐 Other Pay Methods</span><span class="toggle-chevron">›</span></div>
-    </div>
-    <div class="topup-note">
-      Prices auto-convert with live exchange rates.<br>
-      Select a package above, then choose your payment method.
-    </div>
-  </div>
-</div>
-
-<!-- ═══ OTHER PAY METHODS POPUP ═══ -->
-<div class="other-pay-overlay" id="other-pay-overlay" onclick="if(event.target===this)closeOtherPay()">
-  <div class="other-pay-modal">
-    <button class="other-pay-close" onclick="closeOtherPay()">&times;</button>
-    <div class="other-pay-header">
-      <h3>🌐 Other Pay Methods</h3>
-    </div>
-    <div class="other-pay-body">
-      <div id="topup-id-methods" style="display:flex;flex-direction:column;gap:10px">
+      <div class="topup-id-toggle" id="topup-id-toggle" onclick="toggleIDMethods()"><span class="toggle-flag">🇮🇩</span><span class="toggle-label">Indonesia Payment Methods</span><span class="toggle-chevron">▼</span></div>
+      <div class="topup-methods-id" id="topup-id-methods">
         <!-- QRIS - Universal -->
         <div class="topup-id-category">🇮🇩 QRIS — Scan &amp; Pay</div>
         <div class="topup-id-grid">
@@ -21100,6 +21090,10 @@ console.log('%c🔊 Audio System v35 loaded', 'background:#c8952a;color:#fff;pad
           </div>
         </div>
       </div>
+    </div>
+    <div class="topup-note">
+      Prices auto-convert with live exchange rates.<br>
+      Select a package above, then choose your payment method.
     </div>
   </div>
 </div>
